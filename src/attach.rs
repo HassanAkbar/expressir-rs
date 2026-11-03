@@ -1324,3 +1324,298 @@ mod span_tests {
         assert_eq!(end.map(line_of), Some(4), "entity ends on line 4");
     }
 }
+
+// ----- The wire node index (NodePositionIndex substrate) -----
+
+/// One indexed wire node: its JSON pointer, class suffix, line span,
+/// and document order.
+#[derive(Debug, Clone)]
+pub struct IndexEntry {
+    pub ptr: String,
+    pub class: String,
+    pub line: usize,
+    pub end_line: Option<usize>,
+    pub offset: Option<u64>,
+    pub order: usize,
+}
+
+/// Line-start offsets over the source (the LineMap analog).
+fn line_starts(source: &str) -> Vec<usize> {
+    let mut starts = vec![0usize];
+    for (i, b) in source.bytes().enumerate() {
+        if b == b'\n' {
+            starts.push(i + 1);
+        }
+    }
+    starts
+}
+
+fn line_of(starts: &[usize], offset: u64) -> usize {
+    starts.partition_point(|&s| s <= offset as usize)
+}
+
+/// The semantic/remark-scope predicates (`semantic?` / `remark_scope?`).
+fn is_semantic(class: &str) -> bool {
+    !matches!(class, "Repository" | "Cache")
+}
+
+fn is_remark_scope(class: &str) -> bool {
+    is_semantic(class) && class != "Interface"
+}
+
+/// DFS over the wire in document order, indexing every `_class` node
+/// that carries offsets. Sorted by (offset, order) like
+/// `build_sorted_nodes`.
+pub struct WireIndex {
+    pub entries: Vec<IndexEntry>,
+    starts: Vec<usize>,
+}
+
+impl WireIndex {
+    pub fn build(root: &Value, source: &str) -> Self {
+        let starts = line_starts(source);
+        let mut entries = Vec::new();
+        collect(root, "$", &starts, &mut entries);
+        entries.sort_by_key(|e| (e.offset.unwrap_or(u64::MAX), e.order));
+        for (i, entry) in entries.iter_mut().enumerate() {
+            entry.order = i;
+        }
+        WireIndex { entries, starts }
+    }
+
+    pub fn line_of(&self, offset: u64) -> usize {
+        line_of(&self.starts, offset)
+    }
+
+    fn semantic(&self) -> impl Iterator<Item = &IndexEntry> {
+        self.entries.iter().filter(|e| is_semantic(&e.class))
+    }
+
+    pub fn starting_at(&self, line: usize) -> Vec<&IndexEntry> {
+        self.semantic().filter(|e| e.line == line).collect()
+    }
+
+    pub fn ending_at(&self, line: usize) -> Vec<&IndexEntry> {
+        self.semantic()
+            .filter(|e| e.end_line == Some(line))
+            .collect()
+    }
+
+    pub fn spanning(&self, line: usize) -> Vec<&IndexEntry> {
+        self.semantic()
+            .filter(|e| e.line <= line && e.end_line.is_some_and(|end| end >= line))
+            .collect()
+    }
+
+    /// Semantic entries with end_line < line, ascending by end_line.
+    pub fn semantic_ending_before(&self, line: usize) -> Vec<&IndexEntry> {
+        let mut list: Vec<&IndexEntry> = self
+            .semantic()
+            .filter(|e| e.end_line.is_some_and(|end| end < line))
+            .collect();
+        list.sort_by_key(|e| e.end_line.unwrap_or(0));
+        list
+    }
+
+    pub fn first_semantic(&self) -> Option<&IndexEntry> {
+        self.semantic().next()
+    }
+
+    /// `nearest_node_to`: most-specific node whose span contains the
+    /// remark line, preferring same-line starts/ends, then the smallest
+    /// containing span; falls back to the last ended node, then the
+    /// first semantic node.
+    pub fn nearest_node_to(&self, remark_line: usize) -> Option<&IndexEntry> {
+        let same_start: Vec<&IndexEntry> = self
+            .starting_at(remark_line)
+            .into_iter()
+            .filter(|e| is_remark_scope(&e.class))
+            .collect();
+        if let Some(last) = same_start.last() {
+            return Some(last);
+        }
+        let same_end: Vec<&IndexEntry> = self
+            .ending_at(remark_line)
+            .into_iter()
+            .filter(|e| is_remark_scope(&e.class))
+            .collect();
+        if let Some(last) = same_end.last() {
+            return Some(last);
+        }
+        let mut containing: Vec<&IndexEntry> = self
+            .spanning(remark_line)
+            .into_iter()
+            .filter(|e| is_remark_scope(&e.class))
+            .collect();
+        if !containing.is_empty() {
+            // ExpFile is a file-level container: remarks inside a schema
+            // belong to the schema.
+            containing.retain(|e| e.class != "ExpFile");
+            let candidates: Vec<&IndexEntry> = if containing.is_empty() {
+                self.spanning(remark_line)
+                    .into_iter()
+                    .filter(|e| is_remark_scope(&e.class))
+                    .collect()
+            } else {
+                containing
+            };
+            candidates
+                .into_iter()
+                .min_by_key(|e| e.end_line.unwrap_or(0) - e.line)
+        } else {
+            let before = self.semantic_ending_before(remark_line);
+            if let Some(last) = before.last() {
+                let max_end = last.end_line.unwrap_or(0);
+                return before
+                    .iter()
+                    .rev()
+                    .find(|e| e.end_line == Some(max_end))
+                    .copied();
+            }
+            self.first_semantic()
+        }
+    }
+
+    /// `node_for_end_scope_at`: the node whose END_XXX is on the remark
+    /// line (within a 2-line window), else the first node of that type.
+    pub fn node_for_end_scope_at(
+        &self,
+        remark_line: usize,
+        line_content: &str,
+    ) -> Option<&IndexEntry> {
+        let lowered = line_content.to_ascii_lowercase();
+        let kind = [
+            ("end_schema", "Schema"),
+            ("end_entity", "Entity"),
+            ("end_type", "Type"),
+            ("end_function", "Function"),
+            ("end_procedure", "Procedure"),
+            ("end_rule", "Rule"),
+        ]
+        .into_iter()
+        .find(|(kw, _)| lowered.contains(kw))
+        .map(|(_, class)| class)?;
+        let mut candidates: Vec<&IndexEntry> = (0..=2)
+            .flat_map(|back| self.ending_at(remark_line - back))
+            .filter(|e| {
+                e.class == kind
+                    && e.end_line
+                        .is_some_and(|end| end <= remark_line && end + 2 >= remark_line)
+            })
+            .collect();
+        candidates.sort_by_key(|e| e.order);
+        candidates
+            .into_iter()
+            .next()
+            .or_else(|| self.entries.iter().find(|e| e.class == kind))
+    }
+}
+
+fn collect(root: &Value, ptr: &str, starts: &[usize], out: &mut Vec<IndexEntry>) {
+    match root {
+        Value::Object(map) => {
+            if let (Some(class), Some(offset)) = (
+                map.get("_class").and_then(Value::as_str),
+                map.get("source_offset").and_then(Value::as_u64),
+            ) {
+                let suffix = class.rsplit("::").next().unwrap_or(class).to_string();
+                if is_semantic(&suffix) {
+                    let end_line = map
+                        .get("source_end_offset")
+                        .and_then(Value::as_u64)
+                        .map(|end| line_of(starts, end));
+                    out.push(IndexEntry {
+                        ptr: ptr.to_string(),
+                        class: suffix,
+                        line: line_of(starts, offset),
+                        end_line,
+                        offset: Some(offset),
+                        order: out.len(),
+                    });
+                }
+            }
+            // Only collection attributes are indexed — the Ruby
+            // registry walk visits collection children, never single
+            // (non-collection) subobjects like an attribute's datatype.
+            for (key, value) in map {
+                if let Value::Array(items) = value {
+                    for (i, item) in items.iter().enumerate() {
+                        collect(item, &format!("{ptr}/{key}/{i}"), starts, out);
+                    }
+                }
+            }
+        }
+        Value::Array(items) => {
+            for (i, item) in items.iter().enumerate() {
+                collect(item, &format!("{ptr}/{i}"), starts, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+#[cfg(test)]
+mod index_tests {
+    use super::*;
+    use crate::ParsedTree;
+
+    const DEMO: &str =
+        "SCHEMA demo;\n  ENTITY thing;\n    name : STRING;\n  END_ENTITY;\nEND_SCHEMA;\n";
+
+    #[test]
+    fn index_entries_have_line_spans_and_order() {
+        let source = DEMO;
+        let wire = ParsedTree::parse(source)
+            .expect("parses")
+            .to_model_json("demo.exp")
+            .expect("wire");
+        let index = WireIndex::build(&wire, source);
+        let entity = index
+            .entries
+            .iter()
+            .find(|e| e.class == "Entity")
+            .expect("entity entry");
+        assert_eq!(entity.line, 2);
+        assert_eq!(entity.end_line, Some(4));
+        // Document order: the schema precedes its entity.
+        let schema = index
+            .entries
+            .iter()
+            .find(|e| e.class == "Schema")
+            .expect("schema");
+        assert!(schema.order < entity.order);
+    }
+
+    #[test]
+    fn nearest_node_resolves_the_enclosing_scope() {
+        let wire = ParsedTree::parse(DEMO)
+            .expect("parses")
+            .to_model_json("demo.exp")
+            .expect("wire");
+        let index = WireIndex::build(&wire, DEMO);
+        // A remark line starting together with a node belongs to that
+        // node (same_start wins) — the attribute on line 3.
+        let nearest = index.nearest_node_to(3).expect("nearest");
+        assert_eq!(nearest.class, "Attribute");
+        // After END_SCHEMA, the last-ended scope is the schema.
+        let nearest = index.nearest_node_to(5).expect("nearest");
+        assert_eq!(nearest.class, "Schema");
+    }
+
+    #[test]
+    fn end_scope_lookup_matches_the_closing_line() {
+        let wire = ParsedTree::parse(DEMO)
+            .expect("parses")
+            .to_model_json("demo.exp")
+            .expect("wire");
+        let index = WireIndex::build(&wire, DEMO);
+        let matched = index
+            .node_for_end_scope_at(4, "  END_ENTITY;")
+            .expect("matched");
+        assert_eq!(matched.class, "Entity");
+        let matched = index
+            .node_for_end_scope_at(5, "END_SCHEMA;")
+            .expect("matched");
+        assert_eq!(matched.class, "Schema");
+    }
+}
