@@ -27,7 +27,7 @@ summary = lambda do |node, out|
     node.class.name.to_s.split("::").last,
     node.respond_to?(:id) ? node.id : nil,
     node.source_offset
-  ]
+  ].compact_map { |part| part.nil? ? "" : part.to_s }.join("|")
   entry = out[key] ||= {
     "remarks" => [],
     "remark_items" => [],
@@ -255,22 +255,6 @@ fn rust_summary(wire: &Value) -> Value {
 }
 
 // one-file attachment parity dump for /tmp/one.exp
-#[test]
-fn dump_one() {
-    let source = std::fs::read_to_string("/tmp/one.exp").expect("read");
-    let tree = expressir_rs::ParsedTree::parse(&source).expect("parse");
-    let mut wire = tree.to_model_json("/tmp/one.exp").expect("wire");
-    expressir_rs::attach::attach_tagged_remarks(&mut wire, &source);
-    expressir_rs::attach::attach_untagged_remarks(&mut wire, &source);
-    // reuse the summary via the test helper is not exported; inline: print the whole wire
-    std::fs::write(
-        "/tmp/one_wire.json",
-        serde_json::to_string_pretty(&wire).unwrap(),
-    )
-    .unwrap();
-    panic!("dumped");
-}
-
 #[test]
 fn attachment_matches_ruby_over_the_corpus() {
     let Some(expressir_dir) = expressir_dir() else {

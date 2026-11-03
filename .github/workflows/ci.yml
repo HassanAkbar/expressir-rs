@@ -108,6 +108,7 @@ jobs:
             cp "expressir/grammar-parg/$f" "assets/$f"
           done
       - run: git diff --exit-code assets/
-      # The remark scanner port is gated against the Ruby scanner over
-      # every .exp fixture the expressir checkout carries.
+      # The remark scanner + attachment ports are gated against the Ruby
+      # lanes over every .exp fixture the expressir checkout carries.
       - run: EXPRESSIR_DIR=$PWD/expressir cargo test --release --test remark_scanner_parity
+      - run: EXPRESSIR_DIR=$PWD/expressir cargo test --release --test remark_attachment_parity

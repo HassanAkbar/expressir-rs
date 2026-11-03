@@ -495,7 +495,7 @@ pub fn find_by_exact_path_mut<'a>(root: &'a mut Value, path: &str) -> Option<&'a
 /// RemarkInfo entry is written on EVERY model element (tag == nil).
 /// The Ruby RemarkInfo wire map carries text/format/tag/placement/region.
 pub fn add_remark_to(node: &mut Value, text: &str) -> bool {
-    add_remark_tagged(node, text, None, None, None)
+    add_remark_tagged(node, text, None, None, None, None)
 }
 
 pub fn add_remark_tagged(
@@ -504,6 +504,7 @@ pub fn add_remark_tagged(
     tag: Option<&str>,
     placement: Option<&'static str>,
     region: Option<&'static str>,
+    source_offset: Option<usize>,
 ) -> bool {
     let Some(class) = node.get("_class").and_then(Value::as_str) else {
         return false;
@@ -532,6 +533,9 @@ pub fn add_remark_tagged(
         }
         if let Some(region) = region {
             info["region"] = Value::String(region.to_string());
+        }
+        if let Some(offset) = source_offset {
+            info["source_offset"] = Value::from(offset as u64);
         }
         if node
             .get("untagged_remarks")
@@ -2321,27 +2325,7 @@ fn find_body_comment_target(
 
 /// `add_remark` with a source offset (tail-flavored, no placement).
 fn add_remark_with_offset(node: &mut Value, text: &str, offset: usize) {
-    if add_remark_to(node, text) {
-        let info = serde_json::json!({
-            "_class": "Expressir::Model::RemarkInfo",
-            "text": text,
-            "format": crate::remark::FORMAT_TAIL,
-            "source_offset": offset,
-        });
-        if node
-            .get("untagged_remarks")
-            .and_then(Value::as_array)
-            .is_none()
-        {
-            node["untagged_remarks"] = Value::Array(Vec::new());
-        }
-        if let Some(items) = node
-            .get_mut("untagged_remarks")
-            .and_then(Value::as_array_mut)
-        {
-            items.push(info);
-        }
-    }
+    add_remark_tagged(node, text, None, None, None, Some(offset));
 }
 
 /// `add_remark` with placement/region (embedded or body comments).
@@ -2351,7 +2335,7 @@ fn add_remark_with_placement(
     placement: Option<&'static str>,
     region: Option<&'static str>,
 ) {
-    add_remark_tagged(node, text, None, placement, region);
+    add_remark_tagged(node, text, None, placement, region, None);
 }
 
 #[cfg(test)]
