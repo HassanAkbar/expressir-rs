@@ -1283,3 +1283,44 @@ mod tagged_chain_tests {
         assert_eq!(remarks[0], Value::String("prefixed note".to_string()));
     }
 }
+
+#[cfg(test)]
+mod span_tests {
+    use super::*;
+    use crate::ParsedTree;
+
+    const DEMO: &str =
+        "SCHEMA demo;\n  ENTITY thing;\n    name : STRING;\n  END_ENTITY;\nEND_SCHEMA;\n";
+
+    #[test]
+    fn wire_nodes_carry_start_and_end_offsets() {
+        let tree = ParsedTree::parse(DEMO).expect("parses");
+        let wire = tree.to_model_json("demo.exp").expect("wire");
+        let arena = tree.arena();
+
+        let line_of = |offset: u64| -> usize {
+            // LineMap over the source.
+            let mut line = 1usize;
+            for (i, b) in DEMO.bytes().enumerate() {
+                if i as u64 >= offset {
+                    break;
+                }
+                if b == b'\n' {
+                    line += 1;
+                }
+            }
+            line
+        };
+
+        let entity = wire.pointer("/schemas/0/entities/0").expect("entity");
+        let start = entity
+            .get("source_offset")
+            .and_then(serde_json::Value::as_u64);
+        let end = entity
+            .get("source_end_offset")
+            .and_then(serde_json::Value::as_u64);
+        assert_eq!(start.map(line_of), Some(2), "entity starts on line 2");
+        // The entity's last token is END_ENTITY's semicolon (line 4).
+        assert_eq!(end.map(line_of), Some(4), "entity ends on line 4");
+    }
+}

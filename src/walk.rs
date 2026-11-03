@@ -150,3 +150,40 @@ pub fn self_and_descendant_hashes(
         _ => {}
     }
 }
+
+/// The end offset (offset + length) of the LAST input slice under
+/// `node`, depth-first from the last child — the complement of
+/// `first_slice_offset`; together the two bound a subtree's byte span.
+/// `spaces` keys are skipped, mirroring `first_slice_offset`.
+pub fn last_slice_end(arena: &AstArena, node: &AstNode, depth: usize) -> Option<u32> {
+    if depth > 10 {
+        return None;
+    }
+    match node {
+        AstNode::InputRef { offset, length } => Some(offset + length),
+        AstNode::Hash { .. } => {
+            let mut end = None;
+            for (key, value) in hash_pairs(arena, node) {
+                if key == "spaces" {
+                    continue;
+                }
+                if let AstNode::InputRef { offset, length } = value {
+                    end = Some(offset + length);
+                } else if let Some(found) = last_slice_end(arena, &value, depth + 1) {
+                    end = Some(found);
+                }
+            }
+            end
+        }
+        AstNode::Array { .. } => {
+            let mut end = None;
+            for v in as_list(arena, node) {
+                if let Some(found) = last_slice_end(arena, &v, depth + 1) {
+                    end = Some(found);
+                }
+            }
+            end
+        }
+        _ => None,
+    }
+}

@@ -214,11 +214,15 @@ pub(crate) fn unwrap_child(arena: &AstArena, w: &AstNode, wrapper: &str) -> AstN
 
 /// Mirror of Builder#attach_source_info: stamp the subtree's first
 /// input-slice offset onto an emitted node (overwriting any inner
-/// stamp, exactly like the Ruby outermost attach).
+/// stamp, exactly like the Ruby outermost attach), plus the last
+/// slice's end — the byte span the remark attacher's line ranges need.
 pub(crate) fn attach_offset(arena: &AstArena, subtree: &AstNode, value: &mut Value) {
     let Value::Object(map) = value else { return };
     if let Some(offset) = crate::walk::first_slice_offset(arena, subtree, 0) {
         map.insert("source_offset".into(), Value::from(u64::from(offset)));
+    }
+    if let Some(end) = crate::walk::last_slice_end(arena, subtree, 0) {
+        map.insert("source_end_offset".into(), Value::from(u64::from(end)));
     }
 }
 
