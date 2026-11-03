@@ -427,8 +427,8 @@ fn supports_remarks(class: &str) -> bool {
             | "Generic"
             | "GenericEntity"
             | "QueryExpression"
-            | "AliasStatement"
-            | "RepeatStatement"
+            | "Alias"
+            | "Repeat"
     )
 }
 
@@ -1375,7 +1375,7 @@ impl WireIndex {
     pub fn build(root: &Value, source: &str) -> Self {
         let starts = line_starts(source);
         let mut entries = Vec::new();
-        collect(root, "$", None, None, &starts, &mut entries);
+        collect(root, "", None, None, &starts, &mut entries);
         entries.sort_by_key(|e| (e.offset.unwrap_or(u64::MAX), e.order));
         for (i, entry) in entries.iter_mut().enumerate() {
             entry.order = i;
@@ -2341,5 +2341,106 @@ fn add_remark_with_placement(
         {
             items.push(info);
         }
+    }
+}
+
+#[cfg(test)]
+mod untagged_tests {
+    use super::*;
+    use crate::ParsedTree;
+
+    fn wire_with_untagged(source: &str) -> Value {
+        let mut wire = ParsedTree::parse(source)
+            .expect("parses")
+            .to_model_json("demo.exp")
+            .expect("wire");
+        attach_untagged_remarks(&mut wire, source);
+        wire
+    }
+
+    #[test]
+    fn remark_between_scopes_falls_to_the_enclosing_schema() {
+        // A remark on its own line between END_ENTITY and END_SCHEMA
+        // attaches to the schema (the nearest node ending there) — the
+        // Ruby end-scope branch fires only when the remark SHARES the
+        // END_ line.
+        let source = "SCHEMA demo;\n  ENTITY thing;\n    name : STRING;\n  END_ENTITY;\n  -- why\nEND_SCHEMA;\n";
+        let wire = wire_with_untagged(source);
+        let schema = wire.pointer("/schemas/0").expect("schema");
+        let remarks = schema
+            .get("remarks")
+            .and_then(Value::as_array)
+            .expect("remarks");
+        assert_eq!(remarks[0], Value::String("why".to_string()));
+    }
+
+    #[test]
+    fn inline_remark_on_an_end_scope_line_attaches_to_the_scope() {
+        let source = "SCHEMA demo;\n  ENTITY thing;\n    name : STRING;\n  END_ENTITY; -- why\nEND_SCHEMA;\n";
+        let wire = wire_with_untagged(source);
+        let entity = wire.pointer("/schemas/0/entities/0").expect("entity");
+        let remarks = entity
+            .get("remarks")
+            .and_then(Value::as_array)
+            .expect("remarks");
+        assert_eq!(remarks[0], Value::String("why".to_string()));
+    }
+
+    #[test]
+    fn inline_trailing_remark_follows_its_statement() {
+        let source =
+            "SCHEMA demo;\n  PROCEDURE p;\n    x := 1; -- why\n  END_PROCEDURE;\nEND_SCHEMA;\n";
+        let wire = wire_with_untagged(source);
+        // The remark lands on the enclosing procedure when no indexed
+        // statement node starts at that position — the assignment is
+        // not a wire-level collection child.
+        let schema = wire.pointer("/schemas/0").expect("schema");
+        let remarks = schema.get("remarks").and_then(Value::as_array);
+        let owner = wire.pointer("/schemas/0/procedures/0").expect("procedure");
+        let fn_remarks = owner.get("remarks").and_then(Value::as_array);
+        let hit = [remarks, fn_remarks]
+            .into_iter()
+            .flatten()
+            .flatten()
+            .any(|r| r == &Value::String("why".to_string()));
+        assert!(hit, "the remark attaches somewhere in the chain");
+    }
+
+    #[test]
+    fn body_comment_before_the_next_statement_is_leading() {
+        // The next statement must carry remarks — only Alias and Repeat
+        // do — for the LEADING attachment to be visible.
+        let source = "SCHEMA demo;\n  PROCEDURE p;\n    x := 1;\n    -- why\n    REPEAT i := 1 TO 2;\n      x := x + 1;\n    END_REPEAT;\n  END_PROCEDURE;\nEND_SCHEMA;\n";
+        let wire = wire_with_untagged(source);
+        // An own-line comment before the next statement is LEADING on
+        // that statement (the Ruby region machinery's contract).
+        let stmt = wire
+            .pointer("/schemas/0/procedures/0/statements/1")
+            .expect("second statement");
+        let remarks = stmt
+            .get("remarks")
+            .and_then(Value::as_array)
+            .expect("remarks");
+        assert_eq!(remarks[0], Value::String("why".to_string()));
+        let infos = stmt
+            .get("untagged_remarks")
+            .and_then(Value::as_array)
+            .expect("infos");
+        assert_eq!(
+            infos[0].get("placement").and_then(Value::as_str),
+            Some("leading")
+        );
+    }
+
+    #[test]
+    fn remark_after_end_schema_attaches_to_the_schema() {
+        let source = "SCHEMA demo;\n  ENTITY thing;\n    name : STRING;\n  END_ENTITY;\nEND_SCHEMA;\n-- closing note\n";
+        let wire = wire_with_untagged(source);
+        let schema = wire.pointer("/schemas/0").expect("schema");
+        let remarks = schema
+            .get("remarks")
+            .and_then(Value::as_array)
+            .expect("remarks");
+        assert_eq!(remarks[0], Value::String("closing note".to_string()));
     }
 }
