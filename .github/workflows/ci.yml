@@ -111,5 +111,6 @@ jobs:
       # The remark scanner + attachment ports are gated against the Ruby
       # lanes over every .exp fixture the expressir checkout carries.
       - run: EXPRESSIR_DIR=$PWD/expressir cargo test --release --test remark_scanner_parity
+      - run: gem install bundler --no-document
       - run: cd expressir && bundle install --jobs 4 && cd -
       - run: EXPRESSIR_DIR=$PWD/expressir cargo test --release --test remark_attachment_parity
