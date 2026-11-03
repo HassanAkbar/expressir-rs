@@ -575,3 +575,711 @@ mod wire_tests {
         assert!(!add_remark_to(&mut wire, "nope"));
     }
 }
+
+// ----- Tagged attachment (the S1-S4 strategy chain) -----
+
+const DECL: &str = "Expressir::Model::Declarations::";
+
+fn class_suffix(node: &Value) -> Option<&str> {
+    node.get("_class")
+        .and_then(Value::as_str)
+        .map(|c| c.rsplit("::").next().unwrap_or(c))
+}
+
+fn schema_ids(root: &Value) -> Vec<String> {
+    root.get("schemas")
+        .and_then(Value::as_array)
+        .map(|schemas| {
+            schemas
+                .iter()
+                .filter_map(|s| s.get("id").and_then(Value::as_str).map(String::from))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The wire pointer of the scope with this exact id: a schema, or one
+/// of its scope declarations (`ScopeResolver#find_by_name`).
+fn scope_node_pointer(root: &Value, name: &str) -> Option<String> {
+    let schemas = root.get("schemas")?.as_array()?;
+    for (i, schema) in schemas.iter().enumerate() {
+        if schema.get("id").and_then(Value::as_str) == Some(name) {
+            return Some(format!("/schemas/{i}"));
+        }
+        for attr in ["functions", "procedures", "rules", "entities", "types"] {
+            if let Some(items) = schema.get(attr).and_then(Value::as_array) {
+                for (j, item) in items.iter().enumerate() {
+                    if item.get("id").and_then(Value::as_str) == Some(name) {
+                        return Some(format!("/schemas/{i}/{attr}/{j}"));
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn node_is_function_rule_procedure(node: &Value) -> bool {
+    matches!(
+        class_suffix(node).unwrap_or(""),
+        "Function" | "Procedure" | "Rule"
+    )
+}
+
+fn supports_informal_propositions(node: &Value) -> bool {
+    matches!(
+        class_suffix(node).unwrap_or(""),
+        "Entity" | "Rule" | "Type" | "InformalPropositionRule"
+    )
+}
+
+/// `extract_ip_id`: "wr:IP1" -> "IP1", "IP1" -> "IP1", "WR1" -> None.
+fn extract_ip_id(item_id: &str) -> Option<String> {
+    let bare = match item_id.split_once(':') {
+        Some((_, rest)) => rest,
+        None => item_id,
+    };
+    is_ip_tag(bare).then(|| bare.to_string())
+}
+
+fn array_push(root: &mut Value, container_ptr: &str, attr: &str, item: Value) -> Option<usize> {
+    let container_ptr = container_ptr.to_string();
+    let arr_ptr = format!("{container_ptr}/{attr}");
+    if root.pointer(&arr_ptr).and_then(Value::as_array).is_none() {
+        if root.pointer(&container_ptr).is_none() {
+            return None;
+        }
+        root.pointer_mut(&container_ptr)?[attr] = Value::Array(Vec::new());
+    }
+    let arr = root.pointer_mut(&arr_ptr)?.as_array_mut()?;
+    arr.push(item);
+    Some(arr.len() - 1)
+}
+
+/// `create_or_find_informal_proposition`: the IP declaration plus its
+/// inner RemarkItem; returns the RemarkItem pointer.
+fn create_or_find_informal_proposition(
+    root: &mut Value,
+    parent_ptr: &str,
+    id: &str,
+) -> Option<String> {
+    let parent = root.pointer(parent_ptr)?;
+    if !supports_informal_propositions(parent) {
+        return None;
+    }
+    let parent_ptr = parent_ptr.to_string();
+    let id = id.to_string();
+    // Find the existing IP by exact id.
+    let ip_count = root
+        .pointer(&format!("{parent_ptr}/informal_propositions"))
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or(0);
+    for i in 0..ip_count {
+        let ip_ptr = format!("{parent_ptr}/informal_propositions/{i}");
+        if root.pointer(&ip_ptr)?.get("id").and_then(Value::as_str) == Some(id.as_str()) {
+            // Find or create the inner remark item.
+            let item_count = root
+                .pointer(&format!("{ip_ptr}/remark_items"))
+                .and_then(Value::as_array)
+                .map(Vec::len)
+                .unwrap_or(0);
+            for j in 0..item_count {
+                let item_ptr = format!("{ip_ptr}/remark_items/{j}");
+                if root.pointer(&item_ptr)?.get("id").and_then(Value::as_str) == Some(id.as_str()) {
+                    return Some(item_ptr);
+                }
+            }
+            let index = array_push(
+                root,
+                &ip_ptr,
+                "remark_items",
+                serde_json::json!({
+                    "_class": format!("{DECL}RemarkItem"),
+                    "id": id,
+                    "remarks": [],
+                }),
+            )?;
+            return Some(format!("{ip_ptr}/remark_items/{index}"));
+        }
+    }
+    let ip_index = array_push(
+        root,
+        &parent_ptr,
+        "informal_propositions",
+        serde_json::json!({
+            "_class": format!("{DECL}InformalPropositionRule"),
+            "id": id,
+            "expression": Value::Null,
+            "remark_items": [],
+        }),
+    )?;
+    let ip_ptr = format!("{parent_ptr}/informal_propositions/{ip_index}");
+    let item_index = array_push(
+        root,
+        &ip_ptr,
+        "remark_items",
+        serde_json::json!({
+            "_class": format!("{DECL}RemarkItem"),
+            "id": id,
+            "remarks": [],
+        }),
+    )?;
+    Some(format!("{ip_ptr}/remark_items/{item_index}"))
+}
+
+/// `create_item_at_parent`: IP-shaped ids redirect to informal
+/// propositions; everything else finds-or-creates a RemarkItem.
+fn create_or_find_item(root: &mut Value, parent_ptr: &str, item_id: &str) -> Option<String> {
+    if let Some(ip_id) = extract_ip_id(item_id) {
+        if let Some(ptr) = create_or_find_informal_proposition(root, parent_ptr, &ip_id) {
+            return Some(ptr);
+        }
+    }
+    let parent_ptr = parent_ptr.to_string();
+    let item_id = item_id.to_string();
+    let count = root
+        .pointer(&format!("{parent_ptr}/remark_items"))
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or(0);
+    for i in 0..count {
+        let item_ptr = format!("{parent_ptr}/remark_items/{i}");
+        if root.pointer(&item_ptr)?.get("id").and_then(Value::as_str) == Some(item_id.as_str()) {
+            return Some(item_ptr);
+        }
+    }
+    let index = array_push(
+        root,
+        &parent_ptr,
+        "remark_items",
+        serde_json::json!({
+            "_class": format!("{DECL}RemarkItem"),
+            "id": item_id,
+            "remarks": [],
+        }),
+    )?;
+    Some(format!("{parent_ptr}/remark_items/{index}"))
+}
+
+/// `normalize_path`: "a.wr:WR1" -> "a.WR1" (split on the LAST colon).
+fn normalize_path(path: &str) -> String {
+    match path.rsplit_once(':') {
+        Some((path_part, item_suffix)) => format!("{path_part}.{item_suffix}"),
+        None => path.to_string(),
+    }
+}
+
+/// `handle_prefixed_tag`: wr:/ip:/ur: — the collection on the containing
+/// scope first, then schema-prefixed exact paths with `:` -> `.`.
+fn prefixed_tag_pointer(
+    root: &Value,
+    scope_ptr: Option<&str>,
+    tag: &str,
+    schema_ids: &[String],
+) -> Option<String> {
+    let (prefix, id) = tag.split_once(':')?;
+    let collection = match prefix.to_ascii_lowercase().as_str() {
+        "wr" => "where_rules",
+        "ip" => "informal_propositions",
+        "ur" => "unique_rules",
+        _ => return None,
+    };
+    if let Some(scope_ptr) = scope_ptr {
+        let scope = root.pointer(scope_ptr)?;
+        if let Some(items) = scope.get(collection).and_then(Value::as_array) {
+            for (i, item) in items.iter().enumerate() {
+                if item.get("id").and_then(Value::as_str) == Some(id) {
+                    return Some(format!("{scope_ptr}/{collection}/{i}"));
+                }
+            }
+        }
+    }
+    for schema_id in schema_ids {
+        let path = format!("{schema_id}.{}", tag.replace(':', "."));
+        if let Some(ptr) = exact_path_pointer(root, &path) {
+            return Some(ptr);
+        }
+    }
+    None
+}
+
+/// `find_target_in_where_clause`: the WHERE-label window owns the tag;
+/// the target is a (created) RemarkItem on the owning where rule.
+fn where_clause_target(
+    root: &mut Value,
+    scope_ptr: &str,
+    tag: &str,
+    remark_line: usize,
+    where_index: &std::collections::BTreeMap<String, Vec<usize>>,
+) -> Option<String> {
+    let scope = root.pointer(scope_ptr)?;
+    let rules = scope.get("where_rules")?.as_array()?;
+    if rules.is_empty() {
+        return None;
+    }
+    for (i, wr) in rules.iter().enumerate() {
+        let Some(id) = wr.get("id").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(lines) = where_index.get(id) else {
+            continue;
+        };
+        for &line_num in lines {
+            if line_num < remark_line && remark_line <= line_num + 5 {
+                let wr_ptr = format!("{scope_ptr}/where_rules/{i}");
+                return create_or_find_item(root, &wr_ptr, tag);
+            }
+        }
+    }
+    None
+}
+
+/// `resolve_longest_owned_prefix`: walk the tag's segments from a
+/// schema root honoring the wr:/ip:/ur: prefixes find() strips, and
+/// return [deepest node pointer, first unresolved segment].
+fn resolve_longest_owned_prefix(
+    root: &Value,
+    path: &str,
+    schema_ids: &[String],
+) -> Option<(String, String)> {
+    let mut candidates = vec![path.to_string()];
+    for schema_id in schema_ids {
+        candidates.push(format!("{schema_id}.{path}"));
+    }
+    for candidate in candidates {
+        let segments: Vec<&str> = candidate.split('.').collect();
+        if segments.is_empty() {
+            continue;
+        }
+        let mut owned = segments[0].to_string();
+        let Some(mut node_ptr) = exact_path_pointer(root, &owned) else {
+            continue;
+        };
+        let mut resolved_any = false;
+        for segment in &segments[1..] {
+            // A lazily created RemarkItem is never a path owner.
+            let stepped = exact_path_pointer(root, &format!("{owned}.{segment}")).filter(|ptr| {
+                root.pointer(ptr)
+                    .and_then(|n| n.get("_class").and_then(Value::as_str))
+                    .is_none_or(|class| !class.ends_with("::RemarkItem"))
+            });
+            if let Some(ptr) = stepped {
+                owned = format!("{owned}.{segment}");
+                node_ptr = ptr;
+                resolved_any = true;
+            } else {
+                if resolved_any {
+                    return Some((node_ptr, (*segment).to_string()));
+                }
+                break;
+            }
+        }
+    }
+    None
+}
+
+/// `create_implicit_remark_item`: the IP-prefixed, segment-aware, and
+/// shortest-parent fallbacks; returns the created/found item pointer.
+fn create_implicit_remark_item(
+    root: &mut Value,
+    path: &str,
+    schema_ids: &[String],
+) -> Option<String> {
+    // "a.b.ip:IP1" convention: the parent path + the bare IP id.
+    if let Some((parent_path, ip_id)) = ip_prefixed_tail(path) {
+        let mut parent = exact_path_pointer(root, &parent_path);
+        if parent.is_none() {
+            for schema_id in schema_ids {
+                parent = exact_path_pointer(root, &format!("{schema_id}.{parent_path}"));
+                if parent.is_some() {
+                    break;
+                }
+            }
+        }
+        if let Some(parent_ptr) = parent {
+            let supports = root
+                .pointer(&parent_ptr)
+                .is_some_and(supports_informal_propositions);
+            if supports {
+                return create_or_find_informal_proposition(root, &parent_ptr, &ip_id);
+            }
+        }
+    }
+
+    // A prefixed intermediate segment splits wrong under the generic
+    // normalized walk; resolve the longest owned prefix instead.
+    let segments: Vec<&str> = path.split('.').collect();
+    if segments.len() > 2
+        && segments[..segments.len() - 1]
+            .iter()
+            .any(|s| s.contains(':'))
+    {
+        if let Some((parent_ptr, item_id)) = resolve_longest_owned_prefix(root, path, schema_ids) {
+            return create_or_find_item(root, &parent_ptr, &item_id);
+        }
+    }
+
+    let clean = normalize_path(path);
+    let parts: Vec<&str> = clean.split('.').collect();
+    if parts.len() < 2 {
+        return None;
+    }
+    for i in (1..parts.len()).rev() {
+        let parent_path = parts[..i].join(".");
+        let item_id = parts[i];
+        let mut parent = exact_path_pointer(root, &parent_path);
+        if parent.is_none() {
+            for schema_id in schema_ids {
+                parent = exact_path_pointer(root, &format!("{schema_id}.{parent_path}"));
+                if parent.is_some() {
+                    break;
+                }
+            }
+        }
+        if let Some(parent_ptr) = parent {
+            return create_or_find_item(root, &parent_ptr, item_id);
+        }
+    }
+    None
+}
+
+/// `path.match(/\A(.+)\.(\w+):(IP\d+)\z/)`.
+fn ip_prefixed_tail(path: &str) -> Option<(String, String)> {
+    let idx = path.rfind('.')?;
+    let (parent_path, tail) = path.split_at(idx);
+    let tail = &tail[1..];
+    let (prefix, ip) = tail.split_once(':')?;
+    if !prefix.chars().all(|c| c.is_alphanumeric() || c == '_') || !is_ip_tag(ip) {
+        return None;
+    }
+    Some((parent_path.to_string(), ip.to_string()))
+}
+
+/// `create_implicit_remark_item_at_schema`.
+fn create_implicit_remark_item_at_schema(
+    root: &mut Value,
+    item_id: &str,
+    schema_id: &str,
+) -> Option<String> {
+    let schema_ptr = exact_path_pointer(root, schema_id)?;
+    let is_schema = root
+        .pointer(&schema_ptr)
+        .and_then(|n| n.get("_class").and_then(Value::as_str))
+        .is_some_and(|c| c.ends_with("::Schema"));
+    if !is_schema {
+        return None;
+    }
+    if let Some(ip_id) = extract_ip_id(item_id) {
+        if let Some(ptr) = create_or_find_informal_proposition(root, &schema_ptr, &ip_id) {
+            return Some(ptr);
+        }
+    }
+    create_or_find_item(root, &schema_ptr, item_id)
+}
+
+/// The tagged-remark strategy chain (`attach_tagged_remarks`) over the
+/// wire. Returns the byte spans that attached.
+pub fn attach_tagged_remarks(root: &mut Value, source: &str) -> Vec<usize> {
+    let remarks = crate::remark::scan(source);
+    let tagged: Vec<_> = remarks.iter().filter(|r| r.tag.is_some()).collect();
+    if tagged.is_empty() {
+        return Vec::new();
+    }
+
+    let schema_id_list = schema_ids(root);
+    let scope_map = build_scope_map(source);
+    let where_index = where_clause_line_index(source);
+    let mut attached_spans: Vec<usize> = Vec::new();
+
+    for remark in tagged {
+        if attached_spans.contains(&remark.position) {
+            continue;
+        }
+        let tag = remark.tag.as_deref().unwrap_or_default();
+        let scope_name = containing_scope_name(&scope_map, remark.line);
+        let mut scope_ptr = scope_name.and_then(|name| scope_node_pointer(root, name));
+        // Source-text fallback when the name lookup missed (IP tags on
+        // types/entities declared on a previous line).
+        if scope_ptr.is_none() {
+            if let Some((_, name)) = find_span_scope_by_source_text(source, remark.line) {
+                scope_ptr = scope_node_pointer(root, &name);
+            }
+        }
+
+        let mut target: Option<String> = None;
+
+        // Informal-proposition tags (the resolved scope only).
+        if is_ip_tag(tag) {
+            if let Some(ref scope_ptr) = scope_ptr {
+                let supports = root
+                    .pointer(scope_ptr)
+                    .is_some_and(supports_informal_propositions);
+                if supports {
+                    target = create_or_find_informal_proposition(root, scope_ptr, tag);
+                }
+            }
+        }
+
+        if target.is_none() {
+            // Prefixed tags (wr:/ip:/ur: — colon, no dot).
+            if tag.contains(':') && !tag.contains('.') {
+                target = prefixed_tag_pointer(root, scope_ptr.as_deref(), tag, &schema_id_list);
+            }
+
+            // S1: exact path.
+            if target.is_none() {
+                target = exact_path_pointer(root, tag);
+            }
+
+            // S1b: dotted tags with the scope path or a schema prefix.
+            if target.is_none() && tag.contains('.') {
+                let scope_class = scope_ptr
+                    .as_deref()
+                    .and_then(|ptr| root.pointer(ptr))
+                    .and_then(class_suffix)
+                    .map(String::from)
+                    .unwrap_or_default();
+                let is_fn_rule_proc =
+                    matches!(scope_class.as_str(), "Function" | "Procedure" | "Rule");
+                if is_fn_rule_proc {
+                    if let Some(scope_ptr) = scope_ptr.as_deref() {
+                        if let Some(schema_id) = scope_owner_schema_id(scope_ptr) {
+                            let scope_path =
+                                format!("{schema_id}.{}", scope_name.unwrap_or_default());
+                            target = exact_path_pointer(root, &format!("{scope_path}.{tag}"));
+                        }
+                    }
+                }
+                if target.is_none() {
+                    for schema_id in &schema_id_list {
+                        target = exact_path_pointer(root, &format!("{schema_id}.{tag}"));
+                        if target.is_some() {
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // S2: simple tags in the containing scope first.
+            if target.is_none() && !tag.contains('.') {
+                if let Some(scope_ptr) = scope_ptr.as_deref() {
+                    target = scope_child_pointer(root, scope_ptr, tag);
+                    if target.is_none() {
+                        target =
+                            where_clause_target(root, scope_ptr, tag, remark.line, &where_index);
+                    }
+                    let scope_class = root
+                        .pointer(scope_ptr)
+                        .and_then(class_suffix)
+                        .map(String::from)
+                        .unwrap_or_default();
+                    let is_fn_rule_proc =
+                        matches!(scope_class.as_str(), "Function" | "Procedure" | "Rule");
+                    if target.is_none() && !is_fn_rule_proc {
+                        for schema_id in &schema_id_list {
+                            target = exact_path_pointer(root, &format!("{schema_id}.{tag}"));
+                            if target.is_some() {
+                                break;
+                            }
+                        }
+                    }
+                } else {
+                    for schema_id in &schema_id_list {
+                        target = exact_path_pointer(root, &format!("{schema_id}.{tag}"));
+                        if target.is_some() {
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // S3: implicit items for qualified paths.
+            if target.is_none() && tag.contains('.') {
+                let scope_class = scope_ptr
+                    .as_deref()
+                    .and_then(|ptr| root.pointer(ptr))
+                    .and_then(class_suffix)
+                    .map(String::from)
+                    .unwrap_or_default();
+                let is_fn_rule_proc =
+                    matches!(scope_class.as_str(), "Function" | "Procedure" | "Rule");
+                if is_fn_rule_proc {
+                    if let Some(scope_ptr) = scope_ptr.as_deref() {
+                        if let Some(schema_id) = scope_owner_schema_id(scope_ptr) {
+                            let scope_path =
+                                format!("{schema_id}.{}", scope_name.unwrap_or_default());
+                            target = create_implicit_remark_item(
+                                root,
+                                &format!("{scope_path}.{tag}"),
+                                &schema_id_list,
+                            );
+                        }
+                    }
+                }
+                if target.is_none() {
+                    target = create_implicit_remark_item(root, tag, &schema_id_list);
+                }
+            }
+
+            // S4: implicit items for simple tags at schema level.
+            if target.is_none() && !tag.contains('.') && !schema_id_list.is_empty() {
+                target = create_implicit_remark_item_at_schema(root, tag, &schema_id_list[0]);
+            }
+        }
+
+        if let Some(target_ptr) = target {
+            if let Some(mut target_node) = root.pointer_mut(&target_ptr) {
+                if add_remark_to(&mut target_node, &remark.text) {
+                    attached_spans.push(remark.position);
+                }
+            }
+        }
+    }
+
+    attached_spans
+}
+
+/// `find_node_in_scope`: the pointer of the scope child with this id.
+fn scope_child_pointer(root: &Value, scope_ptr: &str, tag: &str) -> Option<String> {
+    let scope = root.pointer(scope_ptr)?;
+    let class = class_suffix(scope)?.to_string();
+    for attr in child_collections(&class) {
+        if let Some(items) = scope.get(*attr).and_then(Value::as_array) {
+            for (i, item) in items.iter().enumerate() {
+                if item
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .is_some_and(|v| v.eq_ignore_ascii_case(tag))
+                {
+                    return Some(format!("{scope_ptr}/{attr}/{i}"));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// The id of the schema owning a scope pointer ("/schemas/i/...").
+fn scope_owner_schema_id(scope_ptr: &str) -> Option<String> {
+    if !scope_ptr.starts_with("/schemas/") {
+        return None;
+    }
+    let index: usize = scope_ptr
+        .trim_start_matches("/schemas/")
+        .split('/')
+        .next()?
+        .parse()
+        .ok()?;
+    Some(format!("schemas/{index}"))
+}
+
+#[cfg(test)]
+mod tagged_chain_tests {
+    use super::*;
+    use crate::ParsedTree;
+
+    const DEMO: &str = "SCHEMA demo;\n  ENTITY thing;\n    name : STRING;\n    WHERE\n      wr1 : name <> '';\n  END_ENTITY;\nEND_SCHEMA;\n-- IP1: an informal note\n--\"demo.thing.__note\" dotted item\n--\"demo.demo_extras\" schema item\n-- wr1:WR1 prefixed\n";
+
+    fn wire_with_tagged(source: &str) -> Value {
+        let mut wire = ParsedTree::parse(source)
+            .expect("parses")
+            .to_model_json("demo.exp")
+            .expect("wire");
+        attach_tagged_remarks(&mut wire, source);
+        wire
+    }
+
+    #[test]
+    fn ip_tag_creates_an_informal_proposition_on_the_entity() {
+        // The IP remark sits inside the entity scope.
+        let source = "SCHEMA demo;\n  ENTITY thing;\n    name : STRING;\n    -- IP1: an informal note\n  END_ENTITY;\nEND_SCHEMA;\n";
+        let wire = wire_with_tagged(source);
+        let entity = wire.pointer("/schemas/0/entities/0").expect("entity");
+        let ips = entity
+            .get("informal_propositions")
+            .and_then(Value::as_array)
+            .expect("ips");
+        assert_eq!(ips.len(), 1);
+        assert_eq!(ips[0].get("id").and_then(Value::as_str), Some("IP1"));
+        let items = ips[0]
+            .get("remark_items")
+            .and_then(Value::as_array)
+            .expect("items");
+        assert_eq!(items[0].get("id").and_then(Value::as_str), Some("IP1"));
+        let remarks = items[0]
+            .get("remarks")
+            .and_then(Value::as_array)
+            .expect("remarks");
+        assert_eq!(remarks[0], Value::String("an informal note".to_string()));
+    }
+
+    #[test]
+    fn dotted_unknown_path_creates_a_remark_item_on_the_parent() {
+        let wire = wire_with_tagged(
+            "SCHEMA demo;\n  ENTITY thing;\n    name : STRING;\n  END_ENTITY;\nEND_SCHEMA;\n--\"demo.thing.__note\" dotted item\n",
+        );
+        let entity = wire.pointer("/schemas/0/entities/0").expect("entity");
+        let items = entity
+            .get("remark_items")
+            .and_then(Value::as_array)
+            .expect("items");
+        assert_eq!(items[0].get("id").and_then(Value::as_str), Some("__note"));
+        let remarks = items[0]
+            .get("remarks")
+            .and_then(Value::as_array)
+            .expect("remarks");
+        assert_eq!(remarks[0], Value::String("dotted item".to_string()));
+    }
+
+    #[test]
+    fn simple_unknown_tag_creates_a_schema_level_item() {
+        let wire = wire_with_tagged(
+            "SCHEMA demo;\n  ENTITY thing;\n    name : STRING;\n  END_ENTITY;\nEND_SCHEMA;\n--\"demo.demo_extras\" schema item\n",
+        );
+        let schema = wire.pointer("/schemas/0").expect("schema");
+        let items = schema
+            .get("remark_items")
+            .and_then(Value::as_array)
+            .expect("items");
+        assert_eq!(
+            items[0].get("id").and_then(Value::as_str),
+            Some("demo_extras")
+        );
+        let remarks = items[0]
+            .get("remarks")
+            .and_then(Value::as_array)
+            .expect("remarks");
+        assert_eq!(remarks[0], Value::String("schema item".to_string()));
+    }
+
+    #[test]
+    fn tagged_where_rule_id_resolves_scope_locally() {
+        let source = "SCHEMA demo;\n  ENTITY thing;\n    name : STRING;\n    WHERE\n      wr1 : name <> '';\n    --\"demo.thing.wr1\" wr1 note text\n  END_ENTITY;\nEND_SCHEMA;\n";
+        let wire = wire_with_tagged(source);
+        // The tag resolves scope-locally to the rule itself, so the
+        // remark lands on the rule's remarks (not an implicit item).
+        let wr = wire
+            .pointer("/schemas/0/entities/0/where_rules/0")
+            .expect("wr");
+        let remarks = wr
+            .get("remarks")
+            .and_then(Value::as_array)
+            .expect("remarks");
+        assert_eq!(remarks[0], Value::String("wr1 note text".to_string()));
+    }
+
+    #[test]
+    fn prefixed_tag_resolves_inside_the_scope() {
+        let source = "SCHEMA demo;\n  ENTITY thing;\n    name : STRING;\n    WHERE\n      wr1 : name <> '';\n  END_ENTITY;\nEND_SCHEMA;\n--\"demo.thing.wr:WR1\" prefixed note\n";
+        let wire = wire_with_tagged(source);
+        let wr = wire
+            .pointer("/schemas/0/entities/0/where_rules/0")
+            .expect("wr");
+        let remarks = wr
+            .get("remarks")
+            .and_then(Value::as_array)
+            .expect("remarks");
+        assert_eq!(remarks[0], Value::String("prefixed note".to_string()));
+    }
+}
