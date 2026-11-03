@@ -1284,7 +1284,6 @@ mod tagged_chain_tests {
 
 #[cfg(test)]
 mod span_tests {
-    use super::*;
     use crate::ParsedTree;
 
     const DEMO: &str =
