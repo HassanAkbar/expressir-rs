@@ -490,25 +490,64 @@ pub fn find_by_exact_path_mut<'a>(root: &'a mut Value, path: &str) -> Option<&'a
     root.pointer_mut(&ptr)
 }
 
-/// Append `text` to the node's `remarks` (Ruby `add_remark`: dropped
-/// when the class carries no remarks or the text is blank).
+/// Ruby `add_remark`: blank bodies drop; the plain `remarks` array is
+/// written only on HasRemarks classes, but the untagged_remarks
+/// RemarkInfo entry is written on EVERY model element (tag == nil).
+/// The Ruby RemarkInfo wire map carries text/format/tag/placement/region.
 pub fn add_remark_to(node: &mut Value, text: &str) -> bool {
+    add_remark_tagged(node, text, None, None, None)
+}
+
+pub fn add_remark_tagged(
+    node: &mut Value,
+    text: &str,
+    tag: Option<&str>,
+    placement: Option<&'static str>,
+    region: Option<&'static str>,
+) -> bool {
     let Some(class) = node.get("_class").and_then(Value::as_str) else {
         return false;
     };
-    if !supports_remarks(class) || text.trim().is_empty() {
+    if text.trim().is_empty() {
         return false;
     }
-    if node.get("remarks").and_then(Value::as_array).is_none() {
-        node["remarks"] = Value::Array(Vec::new());
-    }
-    match node.get_mut("remarks").and_then(Value::as_array_mut) {
-        Some(items) => {
-            items.push(Value::String(text.to_string()));
-            true
+    let suffix = class.rsplit("::").next().unwrap_or(class).to_string();
+    if supports_remarks(&suffix) {
+        if node.get("remarks").and_then(Value::as_array).is_none() {
+            node["remarks"] = Value::Array(Vec::new());
         }
-        None => false,
+        if let Some(items) = node.get_mut("remarks").and_then(Value::as_array_mut) {
+            items.push(Value::String(text.to_string()));
+        }
     }
+    if tag.is_none() {
+        let format = if placement == Some("inline") {
+            crate::remark::FORMAT_EMBEDDED
+        } else {
+            crate::remark::FORMAT_TAIL
+        };
+        let mut info = serde_json::json!({ "text": text, "format": format });
+        if let Some(placement) = placement {
+            info["placement"] = Value::String(placement.to_string());
+        }
+        if let Some(region) = region {
+            info["region"] = Value::String(region.to_string());
+        }
+        if node
+            .get("untagged_remarks")
+            .and_then(Value::as_array)
+            .is_none()
+        {
+            node["untagged_remarks"] = Value::Array(Vec::new());
+        }
+        if let Some(items) = node
+            .get_mut("untagged_remarks")
+            .and_then(Value::as_array_mut)
+        {
+            items.push(info);
+        }
+    }
+    true
 }
 
 #[cfg(test)]
@@ -572,8 +611,9 @@ mod wire_tests {
         let schema = find_by_exact_path_mut(&mut wire, "demo").expect("resolves");
         // Blank remark bodies are dropped (GH-363 behavior).
         assert!(!add_remark_to(schema, "   "));
-        // The ExpFile wrapper node (no _class match) rejects.
-        assert!(!add_remark_to(&mut wire, "nope"));
+        // The ExpFile wrapper carries untagged_remarks like any model
+        // element (Ruby supports_remarks? = ModelElement).
+        assert!(add_remark_to(&mut wire, "nope"));
     }
 }
 
@@ -2311,37 +2351,7 @@ fn add_remark_with_placement(
     placement: Option<&'static str>,
     region: Option<&'static str>,
 ) {
-    let format = if placement == Some("inline") {
-        crate::remark::FORMAT_EMBEDDED
-    } else {
-        crate::remark::FORMAT_TAIL
-    };
-    if add_remark_to(node, text) {
-        let mut info = serde_json::json!({
-            "_class": "Expressir::Model::RemarkInfo",
-            "text": text,
-            "format": format,
-        });
-        if let Some(placement) = placement {
-            info["placement"] = Value::String(placement.to_string());
-        }
-        if let Some(region) = region {
-            info["region"] = Value::String(region.to_string());
-        }
-        if node
-            .get("untagged_remarks")
-            .and_then(Value::as_array)
-            .is_none()
-        {
-            node["untagged_remarks"] = Value::Array(Vec::new());
-        }
-        if let Some(items) = node
-            .get_mut("untagged_remarks")
-            .and_then(Value::as_array_mut)
-        {
-            items.push(info);
-        }
-    }
+    add_remark_tagged(node, text, None, placement, region);
 }
 
 #[cfg(test)]
