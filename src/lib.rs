@@ -8,6 +8,7 @@
 //! labels), types, functions, procedures, rules, and constants.
 //! Subsequent phases deepen the model and move remark attachment.
 
+pub mod attach;
 pub mod batch;
 pub mod compiled_set;
 pub mod extract;
