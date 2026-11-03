@@ -3,15 +3,13 @@
 //!
 //! Usage: `cargo run --release --example normalize_bench -- <file.exp>...`
 
-use parsanol::portable::{to_parslet_compatible, AstArena, Grammar, PortableParser};
-
-const EXPRESS_GRAMMAR_JSON: &str = include_str!("../assets/express-grammar.json");
+use parsanol::portable::{to_parslet_compatible, AstArena, PortableParser};
 
 fn main() {
     let paths: Vec<String> = std::env::args().skip(1).collect();
     assert!(!paths.is_empty(), "usage: normalize_bench <file.exp>...");
 
-    let grammar = Grammar::from_json(EXPRESS_GRAMMAR_JSON).expect("grammar");
+    let grammar = expressir_rs::grammar().clone();
     let mut parse_raw = 0.0f64;
     let mut normalize = 0.0f64;
     let mut bytes = 0usize;

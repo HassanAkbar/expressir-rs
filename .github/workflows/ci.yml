@@ -94,16 +94,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ruby/setup-ruby@v1
+      # The embedded grammar is a copy of lutaml/expressir's edition-2
+      # source (grammar-parg/express-grammar.parg); the gate diffs the
+      # copy against that repo's main.
+      - uses: actions/checkout@v4
         with:
-          ruby-version: "3.4"
-      # The job only diffs the grammar dump; building the expressir
-      # gem's extension must not inherit the repo-wide -D warnings,
-      # which turn the pinned ext's deprecated-API calls into errors.
-      - run: bundle install --jobs 4
-        env:
-          RUSTFLAGS: ""
-      - run: bundle exec rake expressir:grammar:dump
-        env:
-          RUSTFLAGS: ""
-      - run: git diff --exit-code assets/express-grammar.json
+          repository: lutaml/expressir
+          ref: main
+          path: expressir
+      - run: cp expressir/grammar-parg/express-grammar.parg assets/express-grammar.parg
+      - run: git diff --exit-code assets/express-grammar.parg

@@ -26,24 +26,38 @@ use std::sync::OnceLock;
 use parsanol::portable::to_parslet_compatible;
 use parsanol::portable::{AstArena, Grammar, PortableParser};
 
-/// The EXPRESS grammar as serialized by the Ruby tier
-/// (`Parsanol::Native::Parser.grammar_json`). Regenerate with
-/// `bundle exec rake expressir:grammar:dump`.
-const EXPRESS_GRAMMAR_JSON: &str = include_str!("../assets/express-grammar.json");
+/// The EXPRESS grammar source at edition 2 — the same .parg file the
+/// Ruby tier ships (`grammar-parg/express-grammar.parg`, serialized
+/// from the live DSL by grammar-parg/atoms_to_parg.rb). The parg
+/// frontend compiles the entry to the portable Grammar the engine
+/// consumes; the lossy serialize_grammar JSON dump is gone.
+const EXPRESS_GRAMMAR_PARG: &str = include_str!("../assets/express-grammar.parg");
+
+/// The entry rule the model extraction starts from.
+const ENTRY_RULE: &str = "syntax";
 
 /// Crate version, embedded for artifact headers.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// SHA-256 of the embedded grammar JSON — part of the compiled-set
+/// SHA-256 of the embedded grammar source — part of the compiled-set
 /// identity (a grammar change invalidates every artifact).
 pub fn grammar_digest() -> String {
-    compiled_set::sha256_hex(EXPRESS_GRAMMAR_JSON.as_bytes())
+    compiled_set::sha256_hex(EXPRESS_GRAMMAR_PARG.as_bytes())
 }
 
-fn grammar() -> &'static Grammar {
+pub fn grammar() -> &'static Grammar {
     static GRAMMAR: OnceLock<Grammar> = OnceLock::new();
     GRAMMAR.get_or_init(|| {
-        Grammar::from_json(EXPRESS_GRAMMAR_JSON).expect("embedded EXPRESS grammar is valid")
+        use parsanol::parg::frontend;
+        let parsed = frontend::parser::parse_grammar(EXPRESS_GRAMMAR_PARG)
+            .expect("embedded EXPRESS grammar is valid");
+        let tables = frontend::compile::Tables::default();
+        let mut compiler =
+            frontend::compile::compiler_for(&parsed.document, &tables, &parsed.atomic_rules)
+                .expect("embedded EXPRESS compiler builds");
+        compiler
+            .compile_entry_grammar(ENTRY_RULE)
+            .expect("embedded EXPRESS grammar compiles")
     })
 }
 

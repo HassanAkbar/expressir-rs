@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use parsanol::portable::compile_bytecode;
 use parsanol::portable::parse_with_vm;
-use parsanol::portable::{to_parslet_compatible, AstArena, AstNode, Grammar, PortableParser};
+use parsanol::portable::{to_parslet_compatible, AstArena, AstNode, PortableParser};
 
 /// Content-based deep equality across two arenas (pool indexes differ
 /// by interning order, so every ref is resolved to its content).
@@ -71,17 +71,14 @@ fn deep_equal(a: &AstArena, x: &AstNode, b: &AstArena, y: &AstNode) -> bool {
     }
 }
 
-const EXPRESS_GRAMMAR_JSON: &str = include_str!("../assets/express-grammar.json");
-
 fn main() {
     let paths: Vec<String> = std::env::args().skip(1).collect();
     assert!(!paths.is_empty(), "usage: vm_bench <file.exp>...");
 
-    let grammar = Grammar::from_json(EXPRESS_GRAMMAR_JSON).expect("grammar");
+    let grammar = expressir_rs::grammar().clone();
 
     let t0 = Instant::now();
-    let program = compile_bytecode(Grammar::from_json(EXPRESS_GRAMMAR_JSON).expect("grammar"))
-        .expect("bytecode compile");
+    let program = compile_bytecode(expressir_rs::grammar().clone()).expect("bytecode compile");
     println!("program compile: {:.2}s", t0.elapsed().as_secs_f64());
 
     let mut packrat_s = 0.0f64;

@@ -6,9 +6,7 @@
 use std::time::Instant;
 
 use expressir_rs::ParsedTree;
-use parsanol::portable::{AstArena, Grammar, PortableParser};
-
-const EXPRESS_GRAMMAR_JSON: &str = include_str!("../assets/express-grammar.json");
+use parsanol::portable::{AstArena, PortableParser};
 
 fn main() {
     let path = std::env::args()
@@ -22,7 +20,7 @@ fn main() {
         .and_then(|s| s.parse().ok())
         .unwrap_or(3);
 
-    let grammar = Grammar::from_json(EXPRESS_GRAMMAR_JSON).expect("grammar");
+    let grammar = expressir_rs::grammar().clone();
 
     let mut parse_t = f64::MAX;
     let mut full_t = f64::MAX;
