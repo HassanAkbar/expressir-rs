@@ -125,14 +125,19 @@ fn ruby_summary(expressir_dir: &Path, files: &[PathBuf]) -> Result<Value, String
             .map(|p| p.to_string_lossy().into_owned())
             .collect::<Vec<_>>(),
     });
-    let mut child = Command::new("ruby")
+    // The expressir checkout's own bundle carries its dependencies
+    // (lutaml-model, parsanol) — plain system ruby has none of them.
+    let mut child = Command::new("bundle")
+        .arg("exec")
+        .arg("ruby")
         .arg("-e")
         .arg(RUBY_HARNESS)
         .arg(expressir_dir)
+        .current_dir(expressir_dir)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("ruby unavailable: {e}"))?;
+        .map_err(|e| format!("bundle/ruby unavailable: {e}"))?;
     {
         use std::io::Write;
         child
