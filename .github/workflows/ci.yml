@@ -102,8 +102,12 @@ jobs:
           repository: lutaml/expressir
           ref: main
           path: expressir
-      - run: cp expressir/grammar-parg/express-grammar.parg assets/express-grammar.parg
-      - run: git diff --exit-code assets/express-grammar.parg
+      - name: Sync the split grammar (expressir#588)
+        run: |
+          for f in express-grammar.parg express_keywords.parg express_operators.parg express_remarks.parg express_literals.parg; do
+            cp "expressir/grammar-parg/$f" "assets/$f"
+          done
+      - run: git diff --exit-code assets/
       # The remark scanner port is gated against the Ruby scanner over
       # every .exp fixture the expressir checkout carries.
       - run: EXPRESSIR_DIR=$PWD/expressir cargo test --release --test remark_scanner_parity

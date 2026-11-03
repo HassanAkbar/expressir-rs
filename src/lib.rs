@@ -32,7 +32,16 @@ use parsanol::portable::{AstArena, Grammar, PortableParser};
 /// from the live DSL by grammar-parg/atoms_to_parg.rb). The parg
 /// frontend compiles the entry to the portable Grammar the engine
 /// consumes; the lossy serialize_grammar JSON dump is gone.
+///
+/// The grammar is SPLIT into logical components composed with
+/// top-level `use` declarations (expressir#588): the four component
+/// sources below merge into the main document before compilation —
+/// the same expansion the Ruby artifact bakes.
 const EXPRESS_GRAMMAR_PARG: &str = include_str!("../assets/express-grammar.parg");
+const EXPRESS_KEYWORDS_PARG: &str = include_str!("../assets/express_keywords.parg");
+const EXPRESS_OPERATORS_PARG: &str = include_str!("../assets/express_operators.parg");
+const EXPRESS_REMARKS_PARG: &str = include_str!("../assets/express_remarks.parg");
+const EXPRESS_LITERALS_PARG: &str = include_str!("../assets/express_literals.parg");
 
 /// The entry rule the model extraction starts from.
 const ENTRY_RULE: &str = "syntax";
@@ -50,8 +59,28 @@ pub fn grammar() -> &'static Grammar {
     static GRAMMAR: OnceLock<Grammar> = OnceLock::new();
     GRAMMAR.get_or_init(|| {
         use parsanol::parg::frontend;
-        let parsed = frontend::parser::parse_grammar(EXPRESS_GRAMMAR_PARG)
+        let mut parsed = frontend::parser::parse_grammar(EXPRESS_GRAMMAR_PARG)
             .expect("embedded EXPRESS grammar is valid");
+        let sources = std::collections::BTreeMap::from([
+            (
+                "express_keywords".to_string(),
+                EXPRESS_KEYWORDS_PARG.to_string(),
+            ),
+            (
+                "express_operators".to_string(),
+                EXPRESS_OPERATORS_PARG.to_string(),
+            ),
+            (
+                "express_remarks".to_string(),
+                EXPRESS_REMARKS_PARG.to_string(),
+            ),
+            (
+                "express_literals".to_string(),
+                EXPRESS_LITERALS_PARG.to_string(),
+            ),
+        ]);
+        frontend::imports::merge_sources(&mut parsed.document, &sources, &mut parsed.atomic_rules)
+            .expect("embedded EXPRESS components merge");
         let tables = frontend::compile::Tables::default();
         let mut compiler =
             frontend::compile::compiler_for(&parsed.document, &tables, &parsed.atomic_rules)
