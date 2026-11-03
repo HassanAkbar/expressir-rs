@@ -1619,3 +1619,135 @@ mod index_tests {
         assert_eq!(matched.class, "Schema");
     }
 }
+
+// ----- Region machinery substrate (statement regions, scope walk) -----
+
+/// Placement constants (`Model::RemarkPlacement`).
+pub const PLACEMENT_LEADING: &str = "leading";
+pub const PLACEMENT_TRAILING: &str = "trailing";
+pub const PLACEMENT_INLINE: &str = "inline";
+pub const REGION_OPENER: &str = "opener";
+pub const REGION_ELSE: &str = "else";
+pub const REGION_OTHERWISE: &str = "otherwise";
+
+/// Wire classes that can take a remark written after them on the same
+/// line (`Model::TakesInlineRemark` = Statement + Interface).
+fn takes_inline_remark(class: &str) -> bool {
+    class.contains("::Statements::") || class == "Interface"
+}
+
+/// Executable-statement owners for region lookup (`Model::Statement`
+/// or function/rule/procedure heads).
+fn is_statement_or_body_owner(class: &str) -> bool {
+    class.contains("::Statements::") || matches!(class, "Function" | "Procedure" | "Rule")
+}
+
+use regex::Regex;
+use std::sync::LazyLock;
+
+/// `CLOSING_KEYWORDS` — which closing keyword ends which region of
+/// which owner. Ordered like the Ruby hash (first match wins).
+static CLOSING_KEYWORDS: LazyLock<Vec<(Regex, &'static str, &'static str)>> = LazyLock::new(|| {
+    vec![
+        (Regex::new(r"(?i)\AELSE\b").unwrap(), "If", "statements"),
+        (
+            Regex::new(r"(?i)\AEND_IF\b").unwrap(),
+            "If",
+            "else_statements",
+        ),
+        (
+            Regex::new(r"(?i)\AOTHERWISE\b").unwrap(),
+            "Case",
+            "action_statements",
+        ),
+        (
+            Regex::new(r"(?i)\AEND_CASE\b").unwrap(),
+            "Case",
+            "otherwise_statements",
+        ),
+        (
+            Regex::new(r"(?i)\AEND_REPEAT\b").unwrap(),
+            "Repeat",
+            "statements",
+        ),
+        (
+            Regex::new(r"(?i)\AEND_ALIAS\b").unwrap(),
+            "Alias",
+            "statements",
+        ),
+        (
+            Regex::new(r"(?i)\AEND\s*;").unwrap(),
+            "Compound",
+            "statements",
+        ),
+        (Regex::new(r"(?i)\AWHERE\b").unwrap(), "Rule", "statements"),
+        (
+            Regex::new(r"(?i)\AEND_FUNCTION\b").unwrap(),
+            "Function",
+            "statements",
+        ),
+        (
+            Regex::new(r"(?i)\AEND_PROCEDURE\b").unwrap(),
+            "Procedure",
+            "statements",
+        ),
+        (
+            Regex::new(r"(?i)\AEND_RULE\b").unwrap(),
+            "Rule",
+            "where_rules",
+        ),
+    ]
+});
+
+/// `OPENERS`: nestable-construct openers paired with their wire class;
+/// the empty class marks entity/type heads (tracked, but produce no
+/// statement node).
+static OPENERS: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
+    vec![
+        (Regex::new(r"(?i)\bIF\b.*?\bTHEN\b").unwrap(), "If"),
+        (Regex::new(r"(?i)\bCASE\b.*?\bOF\b").unwrap(), "Case"),
+        (Regex::new(r"(?i)\bREPEAT\b").unwrap(), "Repeat"),
+        (Regex::new(r"(?i)\bALIAS\b").unwrap(), "Alias"),
+        (Regex::new(r"(?i)\bBEGIN\b").unwrap(), "Compound"),
+        (Regex::new(r"(?i)\A\s*FUNCTION\b").unwrap(), "Function"),
+        (Regex::new(r"(?i)\A\s*PROCEDURE\b").unwrap(), "Procedure"),
+        (Regex::new(r"(?i)\A\s*RULE\b").unwrap(), "Rule"),
+        (Regex::new(r"(?i)\A\s*ENTITY\b").unwrap(), ""),
+        (Regex::new(r"(?i)\A\s*TYPE\b").unwrap(), ""),
+    ]
+});
+
+/// `CLOSERS`.
+static CLOSERS: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)\bEND_IF\b|\bEND_CASE\b|\bEND_REPEAT\b|\bEND_ALIAS\b|\bEND_FUNCTION\b|\bEND_PROCEDURE\b|\bEND_RULE\b|\bEND_ENTITY\b|\bEND_TYPE\b|\bEND\s*;",
+    )
+    .unwrap()
+});
+
+static STRING_LITERAL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"'[^']*'").unwrap());
+
+/// `keyword_scannable`: string literals blanked, trailing remark cut.
+fn keyword_scannable(content: &str) -> String {
+    let without_strings = STRING_LITERAL.replace_all(content, "''").into_owned();
+    match without_strings.find("--") {
+        Some(tail) => without_strings[..tail].to_string(),
+        None => without_strings,
+    }
+}
+
+/// `line_events`: opener/closer events on one line, ordered by offset.
+/// Every occurrence counts.
+fn line_events(content: &str) -> Vec<(usize, bool, &'static str)> {
+    let mut events = Vec::new();
+    for (regex, class) in OPENERS.iter() {
+        for m in regex.find_iter(content) {
+            events.push((m.start(), true, *class));
+        }
+    }
+    for m in CLOSERS.find_iter(content) {
+        events.push((m.start(), false, ""));
+    }
+    events.sort_by_key(|(offset, _, _)| *offset);
+    events
+}
