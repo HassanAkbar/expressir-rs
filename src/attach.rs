@@ -174,6 +174,73 @@ pub fn find_span_scope_by_source_text(source: &str, line: usize) -> Option<(Scop
     None
 }
 
+/// Informal-proposition tag check (`/^\s*IP\d+$/` on the Ruby side —
+/// anchored, uppercase IP, digits only).
+pub fn is_ip_tag(tag: &str) -> bool {
+    let bytes = tag.as_bytes();
+    bytes.len() >= 3
+        && bytes[0] == b'I'
+        && bytes[1] == b'P'
+        && bytes[2..].iter().all(|b| b.is_ascii_digit())
+}
+
+/// `\A\s*WHERE\s+(\w+)\s*:` — the WHERE-clause label opener
+/// (case-insensitive, like the Ruby regex).
+fn where_label(line: &str) -> Option<&str> {
+    const KEYWORD: &str = "WHERE";
+    let trimmed = line.trim_start();
+    if trimmed.len() < KEYWORD.len() || !trimmed[..KEYWORD.len()].eq_ignore_ascii_case(KEYWORD) {
+        return None;
+    }
+    let rest = &trimmed[KEYWORD.len()..];
+    if !rest.starts_with(|c: char| c.is_whitespace()) {
+        return None;
+    }
+    let rest = rest.trim_start();
+    let name: String = rest
+        .chars()
+        .take_while(|c| c.is_alphanumeric() || *c == '_')
+        .collect();
+    if name.is_empty() {
+        return None;
+    }
+    let after = &rest[name.len()..];
+    let after_trimmed = after.trim_start();
+    if after_trimmed.starts_with(':') {
+        Some(&rest[..name.len()])
+    } else {
+        None
+    }
+}
+
+/// Single scan mapping each `WHERE <label>:` occurrence to its 1-based
+/// line numbers (`RemarkAttacher#where_clause_line_index`).
+pub fn where_clause_line_index(source: &str) -> std::collections::BTreeMap<String, Vec<usize>> {
+    let mut index: std::collections::BTreeMap<String, Vec<usize>> =
+        std::collections::BTreeMap::new();
+    for (idx, line) in source.lines().enumerate() {
+        if let Some(label) = where_label(line) {
+            index.entry(label.to_string()).or_default().push(idx + 1);
+        }
+    }
+    index
+}
+
+/// The WHERE-clause ownership window: a label line owns remark lines
+/// strictly after it and within 5 lines (`line_num < remark_line <=
+/// line_num + 5`).
+pub fn where_clause_window_contains(
+    index: &std::collections::BTreeMap<String, Vec<usize>>,
+    label: &str,
+    remark_line: usize,
+) -> bool {
+    index.get(label).is_some_and(|lines| {
+        lines
+            .iter()
+            .any(|&l| l < remark_line && remark_line <= l + 5)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -256,5 +323,40 @@ mod tests {
             find_span_scope_by_source_text(source, 2),
             Some((ScopeKind::Entity, "a".to_string()))
         );
+    }
+
+    #[test]
+    fn ip_tag_detection() {
+        assert!(is_ip_tag("IP1"));
+        assert!(is_ip_tag("IP42"));
+        assert!(!is_ip_tag("ip1"));
+        assert!(!is_tag_not_ip());
+    }
+
+    fn is_tag_not_ip() -> bool {
+        is_ip_tag("IP") || is_ip_tag("IPx") || is_ip_tag("WR1")
+    }
+
+    #[test]
+    fn where_label_matches_ruby_regex() {
+        assert_eq!(where_label("  WHERE wr1 :"), Some("wr1"));
+        assert_eq!(where_label("where wr1:"), Some("wr1"));
+        assert_eq!(where_label("Where wr1  :"), Some("wr1"));
+        assert_eq!(where_label("WHERELIKE x:"), None);
+        assert_eq!(where_label("WHERE :"), None);
+        assert_eq!(where_label("x WHERE y:"), None);
+    }
+
+    #[test]
+    fn where_index_and_window() {
+        let source = "ENTITY e;\n  WHERE wr1 : x > 0;\n  a := 1;\n  -- near\nWR1: ...";
+        let index = where_clause_line_index(source);
+        assert_eq!(index.get("wr1"), Some(&vec![2usize]));
+        // Strictly after, within 5 lines.
+        assert!(where_clause_window_contains(&index, "wr1", 3));
+        assert!(where_clause_window_contains(&index, "wr1", 7));
+        assert!(!where_clause_window_contains(&index, "wr1", 8));
+        assert!(!where_clause_window_contains(&index, "wr1", 2));
+        assert!(!where_clause_window_contains(&index, "wr2", 3));
     }
 }
