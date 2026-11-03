@@ -104,3 +104,6 @@ jobs:
           path: expressir
       - run: cp expressir/grammar-parg/express-grammar.parg assets/express-grammar.parg
       - run: git diff --exit-code assets/express-grammar.parg
+      # The remark scanner port is gated against the Ruby scanner over
+      # every .exp fixture the expressir checkout carries.
+      - run: EXPRESSIR_DIR=$PWD/expressir cargo test --release --test remark_scanner_parity

@@ -14,6 +14,7 @@ pub mod extract;
 pub mod model;
 pub mod model_json;
 pub mod p21;
+pub mod remark;
 pub mod walk;
 pub mod wasm;
 
