@@ -516,6 +516,7 @@ mod wire_tests {
     use super::*;
     use crate::ParsedTree;
 
+    #[allow(dead_code)] // staged: consumed by the untagged orchestrator
     const DEMO: &str = "SCHEMA demo;\n  ENTITY thing;\n    name : STRING;\n  END_ENTITY;\nEND_SCHEMA;\n--\"demo.thing.name\" a remark on the attribute\n";
 
     fn demo_wire() -> Value {
@@ -619,6 +620,7 @@ fn scope_node_pointer(root: &Value, name: &str) -> Option<String> {
     None
 }
 
+#[allow(dead_code)] // staged: consumed by the untagged orchestrator
 fn node_is_function_rule_procedure(node: &Value) -> bool {
     matches!(
         class_suffix(node).unwrap_or(""),
@@ -646,9 +648,7 @@ fn array_push(root: &mut Value, container_ptr: &str, attr: &str, item: Value) ->
     let container_ptr = container_ptr.to_string();
     let arr_ptr = format!("{container_ptr}/{attr}");
     if root.pointer(&arr_ptr).and_then(Value::as_array).is_none() {
-        if root.pointer(&container_ptr).is_none() {
-            return None;
-        }
+        root.pointer(&container_ptr)?;
         root.pointer_mut(&container_ptr)?[attr] = Value::Array(Vec::new());
     }
     let arr = root.pointer_mut(&arr_ptr)?.as_array_mut()?;
@@ -1130,7 +1130,7 @@ pub fn attach_tagged_remarks(root: &mut Value, source: &str) -> Vec<usize> {
 
         if let Some(target_ptr) = target {
             if let Some(mut target_node) = root.pointer_mut(&target_ptr) {
-                if add_remark_to(&mut target_node, &remark.text) {
+                if add_remark_to(target_node, &remark.text) {
                     attached_spans.push(remark.position);
                 }
             }
@@ -1632,12 +1632,14 @@ pub const REGION_OTHERWISE: &str = "otherwise";
 
 /// Wire classes that can take a remark written after them on the same
 /// line (`Model::TakesInlineRemark` = Statement + Interface).
+#[allow(dead_code)] // staged: consumed by the untagged orchestrator
 fn takes_inline_remark(class: &str) -> bool {
     class.contains("::Statements::") || class == "Interface"
 }
 
 /// Executable-statement owners for region lookup (`Model::Statement`
 /// or function/rule/procedure heads).
+#[allow(dead_code)] // staged: consumed by the untagged orchestrator
 fn is_statement_or_body_owner(class: &str) -> bool {
     class.contains("::Statements::") || matches!(class, "Function" | "Procedure" | "Rule")
 }
@@ -1647,6 +1649,7 @@ use std::sync::LazyLock;
 
 /// `CLOSING_KEYWORDS` — which closing keyword ends which region of
 /// which owner. Ordered like the Ruby hash (first match wins).
+#[allow(dead_code)] // staged: consumed by the untagged orchestrator
 static CLOSING_KEYWORDS: LazyLock<Vec<(Regex, &'static str, &'static str)>> = LazyLock::new(|| {
     vec![
         (Regex::new(r"(?i)\AELSE\b").unwrap(), "If", "statements"),
@@ -1702,6 +1705,7 @@ static CLOSING_KEYWORDS: LazyLock<Vec<(Regex, &'static str, &'static str)>> = La
 /// `OPENERS`: nestable-construct openers paired with their wire class;
 /// the empty class marks entity/type heads (tracked, but produce no
 /// statement node).
+#[allow(dead_code)] // staged: consumed by the untagged orchestrator
 static OPENERS: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
     vec![
         (Regex::new(r"(?i)\bIF\b.*?\bTHEN\b").unwrap(), "If"),
@@ -1718,6 +1722,7 @@ static OPENERS: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
 });
 
 /// `CLOSERS`.
+#[allow(dead_code)] // staged: consumed by the untagged orchestrator
 static CLOSERS: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
         r"(?i)\bEND_IF\b|\bEND_CASE\b|\bEND_REPEAT\b|\bEND_ALIAS\b|\bEND_FUNCTION\b|\bEND_PROCEDURE\b|\bEND_RULE\b|\bEND_ENTITY\b|\bEND_TYPE\b|\bEND\s*;",
@@ -1725,9 +1730,11 @@ static CLOSERS: LazyLock<Regex> = LazyLock::new(|| {
     .unwrap()
 });
 
+#[allow(dead_code)] // staged: consumed by the untagged orchestrator
 static STRING_LITERAL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"'[^']*'").unwrap());
 
 /// `keyword_scannable`: string literals blanked, trailing remark cut.
+#[allow(dead_code)] // staged: consumed by the untagged orchestrator
 fn keyword_scannable(content: &str) -> String {
     let without_strings = STRING_LITERAL.replace_all(content, "''").into_owned();
     match without_strings.find("--") {
@@ -1738,6 +1745,7 @@ fn keyword_scannable(content: &str) -> String {
 
 /// `line_events`: opener/closer events on one line, ordered by offset.
 /// Every occurrence counts.
+#[allow(dead_code)] // staged: consumed by the untagged orchestrator
 fn line_events(content: &str) -> Vec<(usize, bool, &'static str)> {
     let mut events = Vec::new();
     for (regex, class) in OPENERS.iter() {
