@@ -360,3 +360,218 @@ mod tests {
         assert!(!where_clause_window_contains(&index, "wr2", 3));
     }
 }
+
+// ----- Wire-tree path resolution (S1: exact paths) -----
+
+use serde_json::Value;
+
+/// The named-child collections each wire `_class` exposes for path
+/// resolution — the Ruby collection registry + Schema's
+/// SCOPE_DECL_COLLECTIONS, keyed by the class-name suffix.
+fn child_collections(class: &str) -> &'static [&'static str] {
+    match class.rsplit("::").next().unwrap_or(class) {
+        "Schema" => &[
+            "constants",
+            "types",
+            "entities",
+            "subtype_constraints",
+            "functions",
+            "procedures",
+            "rules",
+        ],
+        "Entity" => &[
+            "attributes",
+            "derived_attributes",
+            "inverse_attributes",
+            "unique_rules",
+            "where_rules",
+            "informal_propositions",
+        ],
+        "Type" => &["enumeration_items", "where_rules"],
+        "Function" | "Procedure" => &["parameters"],
+        "Rule" => &["where_rules"],
+        "Constant" => &["items"],
+        "SubtypeConstraint" => &["where_rules"],
+        _ => &[],
+    }
+}
+
+/// Classes that carry `remarks` (the Ruby Identifier concern plus the
+/// two direct HasRemarks includes). `add_remark_to` drops text for
+/// everything else, matching `add_remark`.
+fn supports_remarks(class: &str) -> bool {
+    matches!(
+        class.rsplit("::").next().unwrap_or(class),
+        "Schema"
+            | "Constant"
+            | "ConstantItem"
+            | "Type"
+            | "Entity"
+            | "SubtypeConstraint"
+            | "Function"
+            | "Procedure"
+            | "Rule"
+            | "Parameter"
+            | "Variable"
+            | "Attribute"
+            | "DerivedAttribute"
+            | "InverseAttribute"
+            | "UniqueRule"
+            | "WhereRule"
+            | "InformalPropositionRule"
+            | "EnumerationItem"
+            | "RemarkItem"
+            | "InterfacedItem"
+            | "Interface"
+            | "Aggregate"
+            | "Generic"
+            | "GenericEntity"
+            | "QueryExpression"
+            | "AliasStatement"
+            | "RepeatStatement"
+    )
+}
+
+/// `ModelElement#find` over the wire: downcase the parts, strip
+/// `prefix:`es, then resolve schema → registered child collections by
+/// id. Returns the JSON pointer to the resolved node.
+fn exact_path_pointer(root: &Value, path: &str) -> Option<String> {
+    let parts: Vec<String> = path
+        .split('.')
+        .map(|p| p.rsplit(':').next().unwrap_or(p).to_ascii_lowercase())
+        .collect();
+    if parts.is_empty() {
+        return None;
+    }
+    let schemas = root.get("schemas")?.as_array()?;
+    let (index, _) = schemas.iter().enumerate().find(|(_, s)| {
+        s.get("id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| id.eq_ignore_ascii_case(&parts[0]))
+    })?;
+    let mut pointer = format!("/schemas/{index}");
+    let mut current = &schemas[index];
+    for part in &parts[1..] {
+        let class = current.get("_class")?.as_str()?.to_string();
+        let mut found = None;
+        for attr in child_collections(&class) {
+            let Some(items) = current.get(*attr).and_then(Value::as_array) else {
+                continue;
+            };
+            for (i, item) in items.iter().enumerate() {
+                if item
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .is_some_and(|v| v.eq_ignore_ascii_case(part))
+                {
+                    found = Some((attr, i));
+                    break;
+                }
+            }
+            if found.is_some() {
+                break;
+            }
+        }
+        let (attr, i) = found?;
+        pointer.push_str(&format!("/{attr}/{i}"));
+        current = current.get(attr)?.get(i)?;
+    }
+    Some(pointer)
+}
+
+/// Ruby `find_by_exact_path`: the path, then a `:`-normalized retry.
+pub fn find_by_exact_path<'a>(root: &'a Value, path: &str) -> Option<&'a Value> {
+    let ptr = exact_path_pointer(root, path)?;
+    root.pointer(&ptr)
+}
+
+pub fn find_by_exact_path_mut<'a>(root: &'a mut Value, path: &str) -> Option<&'a mut Value> {
+    let ptr = exact_path_pointer(root, path)?;
+    root.pointer_mut(&ptr)
+}
+
+/// Append `text` to the node's `remarks` (Ruby `add_remark`: dropped
+/// when the class carries no remarks or the text is blank).
+pub fn add_remark_to(node: &mut Value, text: &str) -> bool {
+    let Some(class) = node.get("_class").and_then(Value::as_str) else {
+        return false;
+    };
+    if !supports_remarks(class) || text.trim().is_empty() {
+        return false;
+    }
+    if node.get("remarks").and_then(Value::as_array).is_none() {
+        node["remarks"] = Value::Array(Vec::new());
+    }
+    match node.get_mut("remarks").and_then(Value::as_array_mut) {
+        Some(items) => {
+            items.push(Value::String(text.to_string()));
+            true
+        }
+        None => false,
+    }
+}
+
+#[cfg(test)]
+mod wire_tests {
+    use super::*;
+    use crate::ParsedTree;
+
+    const DEMO: &str = "SCHEMA demo;\n  ENTITY thing;\n    name : STRING;\n  END_ENTITY;\nEND_SCHEMA;\n--\"demo.thing.name\" a remark on the attribute\n";
+
+    fn demo_wire() -> Value {
+        ParsedTree::parse(DEMO)
+            .expect("demo parses")
+            .to_model_json("demo.exp")
+            .expect("wire emits")
+    }
+
+    #[test]
+    fn exact_path_resolves_through_the_wire() {
+        let wire = demo_wire();
+        let target = find_by_exact_path(&wire, "demo.thing.name").expect("path resolves");
+        assert!(target
+            .get("_class")
+            .and_then(Value::as_str)
+            .unwrap()
+            .ends_with("::Attribute"));
+    }
+
+    #[test]
+    fn exact_path_is_case_and_prefix_insensitive() {
+        let wire = demo_wire();
+        assert!(find_by_exact_path(&wire, "DEMO.THING.NAME").is_some());
+        assert!(find_by_exact_path(&wire, "demo.thing.wr:name").is_some());
+        assert!(find_by_exact_path(&wire, "demo.nothere").is_none());
+    }
+
+    #[test]
+    fn add_remark_lands_on_the_attribute() {
+        let mut wire = demo_wire();
+        {
+            let target = find_by_exact_path_mut(&mut wire, "demo.thing.name").expect("resolves");
+            assert!(add_remark_to(target, "a remark on the attribute"));
+        }
+        let attrs = wire
+            .pointer("/schemas/0/entities/0/attributes")
+            .expect("attrs");
+        let remarks = attrs[0]
+            .get("remarks")
+            .and_then(Value::as_array)
+            .expect("remarks");
+        assert_eq!(remarks.len(), 1);
+        assert_eq!(
+            remarks[0],
+            Value::String("a remark on the attribute".to_string())
+        );
+    }
+
+    #[test]
+    fn add_remark_drops_blank_and_unsupported() {
+        let mut wire = demo_wire();
+        let schema = find_by_exact_path_mut(&mut wire, "demo").expect("resolves");
+        // Blank remark bodies are dropped (GH-363 behavior).
+        assert!(!add_remark_to(schema, "   "));
+        // The ExpFile wrapper node (no _class match) rejects.
+        assert!(!add_remark_to(&mut wire, "nope"));
+    }
+}
