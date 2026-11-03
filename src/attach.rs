@@ -1333,6 +1333,10 @@ pub struct IndexEntry {
     pub end_line: Option<usize>,
     pub offset: Option<u64>,
     pub order: usize,
+    /// The JSON pointer of the collection-attribute owner (Ruby's
+    /// `owner`), and the collection attribute this node came from.
+    pub owner_ptr: Option<String>,
+    pub collection: Option<&'static str>,
 }
 
 /// Line-start offsets over the source (the LineMap analog).
@@ -1371,7 +1375,7 @@ impl WireIndex {
     pub fn build(root: &Value, source: &str) -> Self {
         let starts = line_starts(source);
         let mut entries = Vec::new();
-        collect(root, "$", &starts, &mut entries);
+        collect(root, "$", None, None, &starts, &mut entries);
         entries.sort_by_key(|e| (e.offset.unwrap_or(u64::MAX), e.order));
         for (i, entry) in entries.iter_mut().enumerate() {
             entry.order = i;
@@ -1507,7 +1511,14 @@ impl WireIndex {
     }
 }
 
-fn collect(root: &Value, ptr: &str, starts: &[usize], out: &mut Vec<IndexEntry>) {
+fn collect(
+    root: &Value,
+    ptr: &str,
+    owner_ptr: Option<String>,
+    collection: Option<&'static str>,
+    starts: &[usize],
+    out: &mut Vec<IndexEntry>,
+) {
     match root {
         Value::Object(map) => {
             if let (Some(class), Some(offset)) = (
@@ -1527,6 +1538,8 @@ fn collect(root: &Value, ptr: &str, starts: &[usize], out: &mut Vec<IndexEntry>)
                         end_line,
                         offset: Some(offset),
                         order: out.len(),
+                        owner_ptr: owner_ptr.clone(),
+                        collection,
                     });
                 }
             }
@@ -1535,18 +1548,58 @@ fn collect(root: &Value, ptr: &str, starts: &[usize], out: &mut Vec<IndexEntry>)
             // (non-collection) subobjects like an attribute's datatype.
             for (key, value) in map {
                 if let Value::Array(items) = value {
+                    let attr = collection_attr(key);
                     for (i, item) in items.iter().enumerate() {
-                        collect(item, &format!("{ptr}/{key}/{i}"), starts, out);
+                        collect(
+                            item,
+                            &format!("{ptr}/{key}/{i}"),
+                            Some(ptr.to_string()),
+                            attr,
+                            starts,
+                            out,
+                        );
                     }
                 }
             }
         }
         Value::Array(items) => {
             for (i, item) in items.iter().enumerate() {
-                collect(item, &format!("{ptr}/{i}"), starts, out);
+                collect(item, &format!("{ptr}/{i}"), None, None, starts, out);
             }
         }
         _ => {}
+    }
+}
+
+/// The collection attribute names the Ruby registry drives (the known
+/// child collections); anything else indexes without a collection tag.
+fn collection_attr(key: &str) -> Option<&'static str> {
+    match key {
+        "schemas" => Some("schemas"),
+        "constants" => Some("constants"),
+        "types" => Some("types"),
+        "entities" => Some("entities"),
+        "subtype_constraints" => Some("subtype_constraints"),
+        "functions" => Some("functions"),
+        "procedures" => Some("procedures"),
+        "rules" => Some("rules"),
+        "interfaces" => Some("interfaces"),
+        "items" => Some("items"),
+        "attributes" => Some("attributes"),
+        "derived_attributes" => Some("derived_attributes"),
+        "inverse_attributes" => Some("inverse_attributes"),
+        "unique_rules" => Some("unique_rules"),
+        "where_rules" => Some("where_rules"),
+        "informal_propositions" => Some("informal_propositions"),
+        "remark_items" => Some("remark_items"),
+        "enumeration_items" => Some("enumeration_items"),
+        "parameters" => Some("parameters"),
+        "statements" => Some("statements"),
+        "else_statements" => Some("else_statements"),
+        "action_statements" => Some("action_statements"),
+        "otherwise_statements" => Some("otherwise_statements"),
+        "untagged_remarks" => Some("untagged_remarks"),
+        _ => None,
     }
 }
 
@@ -1642,6 +1695,11 @@ fn is_statement_or_body_owner(class: &str) -> bool {
 
 use regex::Regex;
 use std::sync::LazyLock;
+
+/// `MID_KEYWORD_REGIONS`: line-head ELSE / OTHERWISE.
+static MID_KEYWORD_ELSE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\AELSE\b").unwrap());
+static MID_KEYWORD_OTHERWISE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)\AOTHERWISE\b").unwrap());
 
 /// `CLOSING_KEYWORDS` — which closing keyword ends which region of
 /// which owner. Ordered like the Ruby hash (first match wins).
@@ -1754,4 +1812,534 @@ fn line_events(content: &str) -> Vec<(usize, bool, &'static str)> {
     }
     events.sort_by_key(|(offset, _, _)| *offset);
     events
+}
+
+// ----- Untagged attachment -----
+
+/// The statement-region collections (`STATEMENT_REGIONS`).
+const STATEMENT_REGIONS: [&str; 4] = [
+    "statements",
+    "else_statements",
+    "action_statements",
+    "otherwise_statements",
+];
+
+static REGION_OPENER_ELSE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)\A(?:.*;)?\s*ELSE(?:\s*--.*)?\z").unwrap());
+static REGION_OPENER_OTHERWISE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)\A\s*OTHERWISE\b").unwrap());
+
+/// `active_scope_map`: line => the construct open at the START of the
+/// line, as (class, opening_line). Stack events come from
+/// `line_events` over `keyword_scannable` content; blank and comment
+/// lines are skipped for events but still record the current top.
+fn active_scope_map(lines: &[&str]) -> Vec<Option<(&'static str, usize)>> {
+    let mut map = Vec::with_capacity(lines.len() + 1);
+    let mut stack: Vec<(&'static str, usize)> = Vec::new();
+    for (idx, raw) in lines.iter().enumerate() {
+        map.push(stack.last().copied());
+        let content = keyword_scannable(raw.trim());
+        if content.trim().is_empty() || content.trim_start().starts_with("--") {
+            continue;
+        }
+        for (_, kind, class) in line_events(&content) {
+            if kind {
+                if !class.is_empty() {
+                    stack.push((class, idx + 1));
+                }
+            } else {
+                stack.pop();
+            }
+        }
+    }
+    map
+}
+
+/// `closing_keyword_after`: the first non-blank, non-comment line after
+/// `line`, matched against CLOSING_KEYWORDS.
+fn closing_keyword_after(
+    lines: &[&str],
+    line: usize,
+) -> Option<(&'static str, &'static str, usize)> {
+    let mut probe = line + 1;
+    while probe <= lines.len() {
+        let content = lines[probe - 1].trim();
+        if !(content.is_empty() || content.starts_with("--")) {
+            break;
+        }
+        probe += 1;
+    }
+    if probe > lines.len() {
+        return None;
+    }
+    let content = lines[probe - 1].trim();
+    for (regex, class, region) in CLOSING_KEYWORDS.iter() {
+        if regex.is_match(content) {
+            return Some((class, region, probe));
+        }
+    }
+    None
+}
+
+/// `innermost_candidate`: drop candidates that are ancestors of others
+/// (ownership is exact via JSON-pointer prefixes), then take the
+/// smallest span.
+fn innermost(candidates: Vec<&IndexEntry>) -> Option<&IndexEntry> {
+    if candidates.len() <= 1 {
+        return candidates.first().copied();
+    }
+    let is_ancestor =
+        |a: &IndexEntry, b: &IndexEntry| b.ptr.starts_with(&a.ptr) && b.ptr.len() > a.ptr.len();
+    let leaves: Vec<&IndexEntry> = candidates
+        .iter()
+        .filter(|cand| !candidates.iter().any(|other| is_ancestor(cand, other)))
+        .copied()
+        .collect();
+    let pool = if leaves.is_empty() {
+        &candidates
+    } else {
+        &leaves
+    };
+    pool.iter()
+        .copied()
+        .min_by_key(|e| e.end_line.unwrap_or(0) - e.line)
+}
+
+/// `statement_region_for`: the innermost statement-bearing node spanning
+/// `line`, plus (when the line sits between two of its bodies) the
+/// region entries the line fronts.
+/// The statement region: the owning entry, the region entries (when the
+/// line fronts one), and the region attribute.
+type Region<'a> = Option<(
+    &'a IndexEntry,
+    Option<Vec<&'a IndexEntry>>,
+    Option<&'static str>,
+)>;
+
+fn statement_region_for<'a>(index: &'a WireIndex, lines: &[&str], line: usize) -> Region<'a> {
+    let mut candidates: Vec<&IndexEntry> = index
+        .spanning(line)
+        .into_iter()
+        .filter(|e| e.line <= line && e.end_line.is_some_and(|end| end >= line))
+        .filter(|e| is_statement_or_body_owner(&e.class))
+        .collect();
+    candidates.sort_by_key(|e| e.order);
+    let enclosing = innermost(candidates)?;
+    let mut children: Vec<&IndexEntry> = index
+        .entries
+        .iter()
+        .filter(|e| {
+            e.owner_ptr.as_deref() == Some(enclosing.ptr.as_str())
+                && e.collection.is_some_and(|c| STATEMENT_REGIONS.contains(&c))
+        })
+        .collect();
+    children.sort_by_key(|e| e.order);
+    if children.is_empty() {
+        return Some((enclosing, None, None));
+    }
+    let preceding = children
+        .iter()
+        .filter(|e| e.line < line)
+        .max_by_key(|e| e.order);
+    let following = children
+        .iter()
+        .filter(|e| e.line > line)
+        .min_by_key(|e| e.order);
+    let region_attr = region_attr_for(lines, line, preceding.copied(), following.copied());
+    let Some(region_attr) = region_attr else {
+        return Some((enclosing, None, None));
+    };
+    let region_entries: Vec<&IndexEntry> = children
+        .into_iter()
+        .filter(|e| e.collection == Some(region_attr))
+        .collect();
+    Some((enclosing, Some(region_entries), Some(region_attr)))
+}
+
+/// `region_attr_for`: a comment between two regions of the same owner
+/// sits on one side of the keyword opening the second region.
+fn region_attr_for(
+    lines: &[&str],
+    line: usize,
+    preceding: Option<&IndexEntry>,
+    following: Option<&IndexEntry>,
+) -> Option<&'static str> {
+    let Some(preceding) = preceding else {
+        return following.and_then(|f| f.collection);
+    };
+    let following_attr = following.and_then(|f| f.collection);
+    if let Some(following_attr) = following_attr {
+        let opener_match = match following_attr {
+            "else_statements" => Some(&REGION_OPENER_ELSE as &LazyLock<Regex>),
+            "otherwise_statements" => Some(&REGION_OPENER_OTHERWISE),
+            _ => None,
+        };
+        if let Some(opener) = opener_match {
+            if preceding.collection != Some(following_attr) {
+                let f_line = following.map(|f| f.line);
+                if let (Some(p_end), Some(f_line)) = (preceding.end_line, f_line) {
+                    let opener_line = (p_end..f_line).find(|&ln| {
+                        let content = lines[ln - 1].trim();
+                        !content.starts_with("--") && opener.is_match(content)
+                    });
+                    if let Some(opener_line) = opener_line {
+                        if line > opener_line {
+                            return Some(following_attr);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    preceding.collection
+}
+
+/// `closing_region_target`: the keyword after the comment names the
+/// owner type and the body being closed; the owner is the innermost
+/// construct of that class still open at the keyword line.
+#[allow(clippy::type_complexity)]
+fn closing_region_target(
+    root: &Value,
+    index: &WireIndex,
+    lines: &[&str],
+    line: usize,
+) -> (Option<String>, Option<&'static str>, Option<&'static str>) {
+    let Some((owner_class, region, keyword_line)) = closing_keyword_after(lines, line) else {
+        return (None, None, None);
+    };
+    let map = active_scope_map(lines);
+    let Some(active) = map.get(keyword_line).copied().flatten() else {
+        return (None, None, None);
+    };
+    if active.0 != owner_class {
+        return (None, None, None);
+    }
+    let opener_line = active.1;
+    let owner = index
+        .starting_at(opener_line)
+        .into_iter()
+        .find(|e| e.class == owner_class);
+    let Some(owner) = owner else {
+        return (None, None, None);
+    };
+    // END_IF closes the THEN body when there is no ELSE; END_CASE closes
+    // the last action when there is no OTHERWISE; END_RULE closes the
+    // statements when the rule has no WHERE section.
+    let region = match (owner_class, region) {
+        ("If", "else_statements") => {
+            let else_len = body_len(root, &owner.ptr, "else_statements");
+            if else_len == 0 {
+                "statements"
+            } else {
+                region
+            }
+        }
+        ("Case", "otherwise_statements") => {
+            let otherwise = root
+                .pointer(&owner.ptr)
+                .and_then(|n| n.get("otherwise_statement"))
+                .is_some_and(|v| !v.is_null());
+            if otherwise {
+                region
+            } else {
+                "action_statements"
+            }
+        }
+        ("Rule", "where_rules") => {
+            let where_len = body_len(root, &owner.ptr, "where_rules");
+            if where_len == 0 {
+                "statements"
+            } else {
+                region
+            }
+        }
+        _ => region,
+    };
+    (Some(owner.ptr.clone()), Some("trailing"), Some(region))
+}
+
+fn body_len(root: &Value, ptr: &str, attr: &str) -> usize {
+    root.pointer(ptr)
+        .and_then(|n| n.get(attr))
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or(0)
+}
+
+/// `inline_remark?`: code precedes the remark on its own line.
+fn inline_remark(lines: &[&str], line: usize) -> bool {
+    let content = lines.get(line - 1).copied().unwrap_or("");
+    match content.find("--") {
+        Some(opener) => !content[..opener].trim().is_empty(),
+        None => false,
+    }
+}
+
+/// `inline_target` + `single_line_owner`/`opener_owner`/`closing_owner`.
+#[allow(clippy::type_complexity)]
+fn inline_target(
+    index: &WireIndex,
+    _lines: &[&str],
+    remark_line: usize,
+    remark_position: usize,
+) -> (Option<String>, Option<&'static str>, Option<&'static str>) {
+    let started_here: Vec<&IndexEntry> = index
+        .starting_at(remark_line)
+        .into_iter()
+        .filter(|e| {
+            takes_inline_remark(&e.class) && e.offset.is_some_and(|o| o < remark_position as u64)
+        })
+        .collect();
+    if started_here.is_empty() {
+        return (None, None, None);
+    }
+    let single_line = started_here
+        .iter()
+        .filter(|e| e.end_line == Some(remark_line))
+        .max_by_key(|e| e.offset.unwrap_or(0));
+    let opener = started_here
+        .iter()
+        .filter(|e| e.end_line.is_some_and(|end| end > remark_line))
+        .max_by_key(|e| e.offset.unwrap_or(0));
+    let began = match (single_line, opener) {
+        (Some(a), Some(b)) => {
+            if a.offset.unwrap_or(0) >= b.offset.unwrap_or(0) {
+                Some(a)
+            } else {
+                Some(b)
+            }
+        }
+        (Some(a), None) => Some(a),
+        (None, Some(b)) => Some(b),
+        (None, None) => None,
+    };
+    let owner = match began {
+        Some(b) => Some(*b),
+        None => started_here
+            .iter()
+            .filter(|e| {
+                e.end_line == Some(remark_line)
+                    && e.line < remark_line
+                    && e.offset.is_some_and(|o| o < remark_position as u64)
+            })
+            .max_by_key(|e| e.offset.unwrap_or(0))
+            .copied(),
+    };
+    let Some(owner) = owner else {
+        return (None, None, None);
+    };
+    let region = if owner.end_line.is_some_and(|end| end > remark_line) {
+        Some(REGION_OPENER)
+    } else {
+        None
+    };
+    (Some(owner.ptr.clone()), Some("inline"), region)
+}
+
+/// `mid_keyword_inline_target`: `ELSE -- why` / `OTHERWISE : -- why`.
+#[allow(clippy::type_complexity)]
+fn mid_keyword_inline_target(
+    index: &WireIndex,
+    lines: &[&str],
+    remark_line: usize,
+) -> (Option<String>, Option<&'static str>, Option<&'static str>) {
+    let content = lines.get(remark_line - 1).copied().unwrap_or("");
+    let Some(opener) = content.find("--") else {
+        return (None, None, None);
+    };
+    let head = content[..opener].trim();
+    let (class, region) = if MID_KEYWORD_ELSE.is_match(head) {
+        ("If", REGION_ELSE)
+    } else if MID_KEYWORD_OTHERWISE.is_match(head) {
+        ("Case", REGION_OTHERWISE)
+    } else {
+        return (None, None, None);
+    };
+    let innermost = index
+        .entries
+        .iter()
+        .filter(|e| {
+            e.class == class
+                && e.line < remark_line
+                && e.end_line.is_some_and(|end| end > remark_line)
+        })
+        .max_by_key(|e| e.line);
+    match innermost {
+        Some(entry) => (Some(entry.ptr.clone()), Some("inline"), Some(region)),
+        None => (None, None, None),
+    }
+}
+
+/// `attach_untagged_remarks`: end-of-scope lines, body comments, then
+/// the nearest-node fallback.
+pub fn attach_untagged_remarks(root: &mut Value, source: &str) -> Vec<usize> {
+    let remarks = crate::remark::scan(source);
+    let untagged: Vec<_> = remarks.iter().filter(|r| r.tag.is_none()).collect();
+    if untagged.is_empty() {
+        return Vec::new();
+    }
+    let lines: Vec<&str> = source.lines().collect();
+    let index = WireIndex::build(root, source);
+    let mut attached: Vec<usize> = Vec::new();
+
+    for remark in untagged {
+        if attached.contains(&remark.position) {
+            continue;
+        }
+        let line_content = lines.get(remark.line - 1).copied().unwrap_or("");
+
+        // A remark right after a scope's closing keyword closes it.
+        if line_content.contains("END_")
+            && [
+                "END_SCHEMA",
+                "END_ENTITY",
+                "END_TYPE",
+                "END_FUNCTION",
+                "END_PROCEDURE",
+                "END_RULE",
+            ]
+            .iter()
+            .any(|kw| {
+                line_content
+                    .to_ascii_lowercase()
+                    .contains(&kw.to_ascii_lowercase())
+            })
+        {
+            let matched = index
+                .node_for_end_scope_at(remark.line, line_content)
+                .map(|e| e.ptr.clone());
+            if let Some(ptr) = matched {
+                if let Some(node) = root.pointer_mut(&ptr) {
+                    add_remark_with_offset(node, &remark.text, remark.position);
+                    attached.push(remark.position);
+                    continue;
+                }
+            }
+        }
+
+        // Body comments: inline, closing, or leading/trailing.
+        let (target, placement, region) =
+            find_body_comment_target(root, &index, &lines, remark.line, remark.position);
+        if let Some(ptr) = target {
+            if let Some(node) = root.pointer_mut(&ptr) {
+                add_remark_with_placement(node, &remark.text, placement, region);
+                attached.push(remark.position);
+                continue;
+            }
+        }
+
+        // Legacy fallback: the nearest node to the remark line.
+        if let Some(entry) = index.nearest_node_to(remark.line) {
+            let ptr = entry.ptr.clone();
+            if let Some(node) = root.pointer_mut(&ptr) {
+                add_remark_with_offset(node, &remark.text, remark.position);
+                attached.push(remark.position);
+            }
+        }
+    }
+    attached
+}
+
+#[allow(clippy::type_complexity)]
+fn find_body_comment_target(
+    root: &Value,
+    index: &WireIndex,
+    lines: &[&str],
+    line: usize,
+    position: usize,
+) -> (Option<String>, Option<&'static str>, Option<&'static str>) {
+    if inline_remark(lines, line) {
+        let (target, placement, region) = inline_target(index, lines, line, position);
+        if target.is_some() {
+            return (target, placement, region);
+        }
+        let mid = mid_keyword_inline_target(index, lines, line);
+        if mid.0.is_some() {
+            return mid;
+        }
+    }
+    let closing = closing_region_target(root, index, lines, line);
+    if closing.0.is_some() {
+        return closing;
+    }
+    let Some((enclosing, region_entries, _region_attr)) = statement_region_for(index, lines, line)
+    else {
+        return (None, None, None);
+    };
+    let Some(region_entries) = region_entries else {
+        return (Some(enclosing.ptr.clone()), None, None);
+    };
+    let following = region_entries
+        .iter()
+        .filter(|e| e.line > line)
+        .min_by_key(|e| e.order);
+    if let Some(following) = following {
+        return (Some(following.ptr.clone()), Some("leading"), None);
+    }
+    (Some(enclosing.ptr.clone()), None, None)
+}
+
+/// `add_remark` with a source offset (tail-flavored, no placement).
+fn add_remark_with_offset(node: &mut Value, text: &str, offset: usize) {
+    if add_remark_to(node, text) {
+        let info = serde_json::json!({
+            "_class": "Expressir::Model::RemarkInfo",
+            "text": text,
+            "format": crate::remark::FORMAT_TAIL,
+            "source_offset": offset,
+        });
+        if node
+            .get("untagged_remarks")
+            .and_then(Value::as_array)
+            .is_none()
+        {
+            node["untagged_remarks"] = Value::Array(Vec::new());
+        }
+        if let Some(items) = node
+            .get_mut("untagged_remarks")
+            .and_then(Value::as_array_mut)
+        {
+            items.push(info);
+        }
+    }
+}
+
+/// `add_remark` with placement/region (embedded or body comments).
+fn add_remark_with_placement(
+    node: &mut Value,
+    text: &str,
+    placement: Option<&'static str>,
+    region: Option<&'static str>,
+) {
+    let format = if placement == Some("inline") {
+        crate::remark::FORMAT_EMBEDDED
+    } else {
+        crate::remark::FORMAT_TAIL
+    };
+    if add_remark_to(node, text) {
+        let mut info = serde_json::json!({
+            "_class": "Expressir::Model::RemarkInfo",
+            "text": text,
+            "format": format,
+        });
+        if let Some(placement) = placement {
+            info["placement"] = Value::String(placement.to_string());
+        }
+        if let Some(region) = region {
+            info["region"] = Value::String(region.to_string());
+        }
+        if node
+            .get("untagged_remarks")
+            .and_then(Value::as_array)
+            .is_none()
+        {
+            node["untagged_remarks"] = Value::Array(Vec::new());
+        }
+        if let Some(items) = node
+            .get_mut("untagged_remarks")
+            .and_then(Value::as_array_mut)
+        {
+            items.push(info);
+        }
+    }
 }
