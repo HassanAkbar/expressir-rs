@@ -1129,7 +1129,7 @@ pub fn attach_tagged_remarks(root: &mut Value, source: &str) -> Vec<usize> {
         }
 
         if let Some(target_ptr) = target {
-            if let Some(mut target_node) = root.pointer_mut(&target_ptr) {
+            if let Some(target_node) = root.pointer_mut(&target_ptr) {
                 if add_remark_to(target_node, &remark.text) {
                     attached_spans.push(remark.position);
                 }
@@ -1178,8 +1178,6 @@ fn scope_owner_schema_id(scope_ptr: &str) -> Option<String> {
 mod tagged_chain_tests {
     use super::*;
     use crate::ParsedTree;
-
-    const DEMO: &str = "SCHEMA demo;\n  ENTITY thing;\n    name : STRING;\n    WHERE\n      wr1 : name <> '';\n  END_ENTITY;\nEND_SCHEMA;\n-- IP1: an informal note\n--\"demo.thing.__note\" dotted item\n--\"demo.demo_extras\" schema item\n-- wr1:WR1 prefixed\n";
 
     fn wire_with_tagged(source: &str) -> Value {
         let mut wire = ParsedTree::parse(source)
@@ -1296,7 +1294,6 @@ mod span_tests {
     fn wire_nodes_carry_start_and_end_offsets() {
         let tree = ParsedTree::parse(DEMO).expect("parses");
         let wire = tree.to_model_json("demo.exp").expect("wire");
-        let arena = tree.arena();
 
         let line_of = |offset: u64| -> usize {
             // LineMap over the source.
