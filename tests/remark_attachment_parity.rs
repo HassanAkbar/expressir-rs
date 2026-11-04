@@ -1,13 +1,16 @@
 //! Rust-vs-Ruby attachment parity over the expressir corpus.
 //!
-//! For every `.exp` fixture: the Rust lane parses, emits the wire, and
-//! runs the full attacher (tagged chain + untagged flows); the Ruby lane
-//! parses and attaches through `RemarkAttacher`. Both sides reduce the
-//! attached model to a canonical remark summary — per node
-//! (class, id, source offset): the plain remarks, the remark items with
-//! their texts, the informal propositions, and the untagged_remarks
-//! entries with placement/region — and the two summaries must match
-//! exactly. Skipped without `EXPRESSIR_DIR`.
+//! The reference lane is the PRODUCT lane: the Rust core parses and
+//! emits the wire, and the Ruby `RemarkAttacher` runs over the
+//! wire-hydrated model — the same model the binding's finalize step
+//! would see. Both lanes start from the SAME wire, so any delta is
+//! attacher-logic drift, not parser drift. The Rust lane runs the full
+//! ported attacher (tagged chain + untagged flows) over the same wire;
+//! both sides reduce the attached model to a canonical remark summary —
+//! per node (class, id, source offset): the plain remarks, the remark
+//! items with their texts, the informal propositions, and the
+//! untagged_remarks entries with placement/region — and the summaries
+//! must match exactly. Skipped without `EXPRESSIR_DIR`.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -67,14 +70,28 @@ summary = lambda do |node, out|
   end
 end
 
+strip_end_offsets = lambda do |obj|
+  case obj
+  when Hash
+    obj.delete("source_end_offset")
+    obj.each_value { |v| strip_end_offsets.call(v) }
+  when Array
+    obj.each { |v| strip_end_offsets.call(v) }
+  end
+  obj
+end
+
 request = JSON.parse($stdin.read)
 result = { "files" => {}, "errors" => {} }
-Array(request["files"]).each do |path|
+request["files"].each do |path, wire|
   begin
     source = File.read(path, encoding: "UTF-8")
-    repo = Expressir::Express::Parser.from_exp(source)
+    strip_end_offsets.call(wire)
+    model = Expressir::Model::ExpFile.from_hash(wire)
+    model.wire_parents
+    Expressir::Express::RemarkAttacher.new(source).attach(model)
     out = {}
-    summary.call(repo, out)
+    summary.call(model, out)
     result["files"][path] = out
   rescue StandardError => e
     result["errors"][path] = "#{e.class}: #{e.message}"
@@ -118,13 +135,8 @@ fn corpus_files(expressir_dir: &Path) -> Vec<PathBuf> {
     files
 }
 
-fn ruby_summary(expressir_dir: &Path, files: &[PathBuf]) -> Result<Value, String> {
-    let request = json!({
-        "files": files
-            .iter()
-            .map(|p| p.to_string_lossy().into_owned())
-            .collect::<Vec<_>>(),
-    });
+fn ruby_summary(expressir_dir: &Path, wires: &BTreeMap<String, Value>) -> Result<Value, String> {
+    let request = json!({ "files": wires });
     // The expressir checkout's own bundle carries its dependencies
     // (lutaml-model, parsanol) — plain system ruby has none of them.
     let mut child = Command::new("bundle")
@@ -270,17 +282,11 @@ fn attachment_matches_ruby_over_the_corpus() {
     let files = corpus_files(&expressir_dir);
     assert!(!files.is_empty(), "no .exp fixtures found");
 
-    let ruby = ruby_summary(&expressir_dir, &files).expect("ruby summary");
-    let errors = ruby["errors"].as_object().cloned().unwrap_or_default();
-    let mut mismatches: BTreeMap<String, String> = BTreeMap::new();
-    let mut compared = 0usize;
-
+    // Both lanes start from the SAME wire per file.
+    let mut wires: BTreeMap<String, Value> = BTreeMap::new();
+    let mut rust_attached: BTreeMap<String, Value> = BTreeMap::new();
     for path in &files {
         let key = path.to_string_lossy().into_owned();
-        if errors.contains_key(&key) {
-            eprintln!("skip (ruby lane errored): {key}");
-            continue;
-        }
         let source = match std::fs::read_to_string(path) {
             Ok(s) => s,
             Err(_) => continue,
@@ -292,16 +298,30 @@ fn attachment_matches_ruby_over_the_corpus() {
                 continue;
             }
         };
-        let mut wire = match tree.to_model_json(&key) {
+        let wire = match tree.to_model_json(&key) {
             Ok(w) => w,
             Err(_) => continue,
         };
-        expressir_rs::attach::attach_tagged_remarks(&mut wire, &source);
-        expressir_rs::attach::attach_untagged_remarks(&mut wire, &source);
-        let rust = rust_summary(&wire);
-        let ruby_remarks = &ruby["files"][&key];
+        let mut attached = wire.clone();
+        expressir_rs::attach::attach_tagged_remarks(&mut attached, &source);
+        expressir_rs::attach::attach_untagged_remarks(&mut attached, &source);
+        wires.insert(key.clone(), wire);
+        rust_attached.insert(key, rust_summary(&attached));
+    }
+
+    let ruby = ruby_summary(&expressir_dir, &wires).expect("ruby summary");
+    let errors = ruby["errors"].as_object().cloned().unwrap_or_default();
+    let mut mismatches: BTreeMap<String, String> = BTreeMap::new();
+    let mut compared = 0usize;
+
+    for (key, rust) in &rust_attached {
+        if errors.contains_key(key) {
+            eprintln!("skip (ruby lane errored): {key}");
+            continue;
+        }
+        let ruby_remarks = &ruby["files"][key];
         compared += 1;
-        if rust != *ruby_remarks {
+        if rust != ruby_remarks {
             mismatches.insert(key.clone(), format!("rust: {rust}\nruby: {ruby_remarks}"));
         }
     }

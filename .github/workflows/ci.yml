@@ -110,9 +110,11 @@ jobs:
       - run: git diff --exit-code assets/
       # The remark scanner + attachment ports are gated against the Ruby
       # lanes over every .exp fixture the expressir checkout carries.
-      - run: EXPRESSIR_DIR=$PWD/expressir cargo test --release --test remark_scanner_parity
+      - run: RUST_MIN_STACK=67108864 EXPRESSIR_DIR=$PWD/expressir cargo test --release --test remark_scanner_parity
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: "3.4"
       - run: cd expressir && bundle install --jobs 4 && cd -
-      - run: EXPRESSIR_DIR=$PWD/expressir cargo test --release --test remark_attachment_parity
+      - run: |
+          RUST_MIN_STACK=67108864 EXPRESSIR_DIR=$PWD/expressir cargo test --release --test remark_attachment_parity
+          RUST_MIN_STACK=67108864 EXPRESSIR_DIR=$PWD/expressir cargo test --release --test formatted_len_parity

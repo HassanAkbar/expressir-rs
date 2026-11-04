@@ -364,6 +364,7 @@ mod tests {
 // ----- Wire-tree path resolution (S1: exact paths) -----
 
 use serde_json::Value;
+use std::collections::HashMap;
 
 /// The named-child collections each wire `_class` exposes for path
 /// resolution — the Ruby collection registry + Schema's
@@ -1377,13 +1378,25 @@ pub struct IndexEntry {
     pub end_line: Option<usize>,
     pub offset: Option<u64>,
     pub order: usize,
-    /// The raw `source_end_offset` before the newline adjustment.
-    raw_end_offset: Option<u64>,
     /// The JSON pointer of the collection-attribute owner (Ruby's
     /// `owner`), and the collection attribute this node came from.
     pub owner_ptr: Option<String>,
     pub collection: Option<&'static str>,
 }
+
+/// Ruby `position_valid?`: a formatted source that opens with a
+/// declaration keyword may legitimately start at byte 0.
+const POSITION_VALID: &[&str] = &[
+    "ExpFile",
+    "Schema",
+    "Entity",
+    "Type",
+    "Function",
+    "Procedure",
+    "Rule",
+    "Constant",
+    "Interface",
+];
 
 /// Line-start offsets over the source (the LineMap analog).
 fn line_starts(source: &str) -> Vec<usize> {
@@ -1426,34 +1439,44 @@ impl WireIndex {
         for (i, entry) in entries.iter_mut().enumerate() {
             entry.order = i;
         }
-        // The Ruby ExpFile entry spans from the FIRST SCHEMA (its
-        // source starts there, not at byte 0), so preamble remarks fall
-        // outside every span and land on the root — which the ExpFile
-        // wire map does not serialize.
-        let first_schema_offset = root
-            .pointer("/schemas/0/source_offset")
-            .and_then(Value::as_u64);
-        if let (Some(entry), Some(schema_offset)) = (entries.first_mut(), first_schema_offset) {
-            if entry.class == "ExpFile" {
-                entry.offset = Some(schema_offset);
-                entry.line = line_of(&starts, schema_offset);
+        // Ruby position_valid?: offset 0 is only trusted for nodes whose
+        // formatted source starts with a declaration keyword (those
+        // legitimately start at byte 0).
+        entries.retain(|e| e.offset != Some(0) || POSITION_VALID.contains(&e.class.as_str()));
+        // Ruby end_line = line_number(offset + source.length) over the
+        // FORMATTED text, maxed with collection children's own ends
+        // (NodePositionIndex#record_node_position). The formatted-length
+        // mirror supplies `source.length`.
+        let lens = crate::format_len::lengths_by_ptr(root);
+        let mut spans: Vec<Option<usize>> = entries
+            .iter()
+            .map(|e| match (e.offset, lens.get(e.ptr.as_str())) {
+                (Some(off), Some(p)) => Some(line_of(&starts, off + p.len as u64)),
+                _ => None,
+            })
+            .collect();
+        let mut children_by_owner: HashMap<&str, Vec<usize>> = HashMap::new();
+        for (i, e) in entries.iter().enumerate() {
+            if let Some(owner) = e.owner_ptr.as_deref() {
+                children_by_owner.entry(owner).or_default().push(i);
             }
         }
-        // Ruby's end_line = line_number(offset + source.length), and the
-        // builder's source includes the node's trailing newline — so a
-        // node whose last byte is followed by a newline ends one line
-        // later than the raw slice arithmetic suggests.
-        let bytes = source.as_bytes();
-        let source_len = source.len();
-        for entry in &mut entries {
-            entry.end_line = entry.raw_end_offset.map(|end| {
-                let base = line_of(&starts, end);
-                if end < source_len as u64 && bytes[end as usize] == b'\n' {
-                    base + 1
-                } else {
-                    base
+        for i in 0..entries.len() {
+            let mut end = spans[i];
+            if let Some(children) = children_by_owner.get(entries[i].ptr.as_str()) {
+                for &j in children {
+                    if let Some(c) = spans[j] {
+                        end = Some(match end {
+                            Some(e) => e.max(c),
+                            None => c,
+                        });
+                    }
                 }
-            });
+            }
+            spans[i] = end;
+        }
+        for (entry, end) in entries.iter_mut().zip(spans) {
+            entry.end_line = end;
         }
         WireIndex { entries, starts }
     }
@@ -1523,10 +1546,23 @@ impl WireIndex {
             .filter(|e| is_remark_scope(&e.class))
             .collect();
         if !containing.is_empty() {
+            // A remark BEFORE the first schema belongs to the file
+            // container even when containers span it.
+            if containing.iter().any(|e| e.class == "ExpFile") {
+                let first_schema_offset = self
+                    .entries
+                    .iter()
+                    .find(|e| e.class == "Schema")
+                    .and_then(|e| e.offset);
+                if let Some(off) = first_schema_offset {
+                    if remark_line < self.line_of(off) {
+                        return containing.iter().find(|e| e.class == "ExpFile").copied();
+                    }
+                }
+            }
             // Prefer non-ExpFile nodes (Schema, Entity, ...) when both
             // span the same range: remarks inside a schema belong to the
-            // schema, and only a remark BEFORE the first schema belongs
-            // to the file container (the preamble special case below).
+            // schema.
             let non_root: Vec<&IndexEntry> = containing
                 .iter()
                 .copied()
@@ -1542,11 +1578,7 @@ impl WireIndex {
             let before = self.semantic_ending_before(remark_line);
             if let Some(last) = before.last() {
                 let max_end = last.end_line.unwrap_or(0);
-                return before
-                    .iter()
-                    .rev()
-                    .find(|e| e.end_line == Some(max_end))
-                    .copied();
+                return before.iter().find(|e| e.end_line == Some(max_end)).copied();
             }
             self.first_semantic()
         }
@@ -1603,36 +1635,66 @@ fn collect(
             ) {
                 let suffix = class.rsplit("::").next().unwrap_or(class).to_string();
                 if is_semantic(&suffix) {
-                    let end_line = map
-                        .get("source_end_offset")
-                        .and_then(Value::as_u64)
-                        .map(|end| line_of(starts, end));
                     out.push(IndexEntry {
                         ptr: ptr.to_string(),
                         class: suffix.clone(),
                         full_class: class.to_string(),
                         line: line_of(starts, offset),
-                        end_line,
+                        end_line: None,
                         offset: Some(offset),
                         order: out.len(),
                         owner_ptr: owner_ptr.clone(),
                         collection,
-                        raw_end_offset: map.get("source_end_offset").and_then(Value::as_u64),
                     });
                 }
             }
-            // Only collection attributes are indexed — the Ruby
-            // registry walk visits collection children, never single
-            // (non-collection) subobjects like an attribute's datatype.
-            for (key, value) in map {
-                if let Value::Array(items) = value {
-                    let attr = collection_attr(key);
+            // The registry walk visits exactly the per-class collection
+            // attributes (NodePositionIndex::COLLECTION_REGISTRY), never
+            // single subobjects like an attribute's datatype or an
+            // aggregate initializer's items. Case's registry names are
+            // VIRTUAL collections: the walk crosses each action's
+            // statement (and the otherwise body) directly, never the
+            // position-less CaseAction wrapper or its labels.
+            let class = map
+                .get("_class")
+                .and_then(Value::as_str)
+                .and_then(|c| c.strip_prefix("Expressir::Model::"))
+                .unwrap_or("");
+            if class == "Statements::Case" {
+                if let Some(Value::Array(items)) = map.get("actions") {
+                    for (idx, item) in items.iter().enumerate() {
+                        if let Some(stmt) = item.get("statement").filter(|v| !v.is_null()) {
+                            collect(
+                                stmt,
+                                &format!("{ptr}/actions/{idx}/statement"),
+                                Some(ptr.to_string()),
+                                Some("action_statements"),
+                                starts,
+                                out,
+                            );
+                        }
+                    }
+                }
+                if let Some(v) = map.get("otherwise_statement").filter(|v| !v.is_null()) {
+                    collect(
+                        v,
+                        &format!("{ptr}/otherwise_statement"),
+                        Some(ptr.to_string()),
+                        Some("otherwise_statements"),
+                        starts,
+                        out,
+                    );
+                }
+                return;
+            }
+            for key in collection_registry(class) {
+                if let Some(Value::Array(items)) = map.get(*key) {
                     for (i, item) in items.iter().enumerate() {
                         collect(
                             item,
                             &format!("{ptr}/{key}/{i}"),
                             Some(ptr.to_string()),
-                            attr,
+                            Some(key),
                             starts,
                             out,
                         );
@@ -1649,35 +1711,64 @@ fn collect(
     }
 }
 
-/// The collection attribute names the Ruby registry drives (the known
-/// child collections); anything else indexes without a collection tag.
-fn collection_attr(key: &str) -> Option<&'static str> {
-    match key {
-        "schemas" => Some("schemas"),
-        "constants" => Some("constants"),
-        "types" => Some("types"),
-        "entities" => Some("entities"),
-        "subtype_constraints" => Some("subtype_constraints"),
-        "functions" => Some("functions"),
-        "procedures" => Some("procedures"),
-        "rules" => Some("rules"),
-        "interfaces" => Some("interfaces"),
-        "items" => Some("items"),
-        "attributes" => Some("attributes"),
-        "derived_attributes" => Some("derived_attributes"),
-        "inverse_attributes" => Some("inverse_attributes"),
-        "unique_rules" => Some("unique_rules"),
-        "where_rules" => Some("where_rules"),
-        "informal_propositions" => Some("informal_propositions"),
-        "remark_items" => Some("remark_items"),
-        "enumeration_items" => Some("enumeration_items"),
-        "parameters" => Some("parameters"),
-        "statements" => Some("statements"),
-        "else_statements" => Some("else_statements"),
-        "action_statements" => Some("action_statements"),
-        "otherwise_statements" => Some("otherwise_statements"),
-        "untagged_remarks" => Some("untagged_remarks"),
-        _ => None,
+/// The per-class collection registry (`collection_attributes`
+/// declarations — the single source of truth the Ruby walkers share).
+fn collection_registry(class: &str) -> &'static [&'static str] {
+    match class {
+        "ExpFile" => &["schemas"],
+        "Declarations::Schema" => &[
+            "interfaces",
+            "constants",
+            "types",
+            "entities",
+            "subtype_constraints",
+            "functions",
+            "rules",
+            "procedures",
+            "remark_items",
+        ],
+        "Declarations::Entity" => &[
+            "attributes",
+            "derived_attributes",
+            "inverse_attributes",
+            "unique_rules",
+            "where_rules",
+            "informal_propositions",
+            "remark_items",
+        ],
+        "Declarations::Type" => {
+            &["where_rules", "informal_propositions", "remark_items"]
+        }
+        "Declarations::Function" | "Declarations::Procedure" => &[
+            "parameters",
+            "types",
+            "entities",
+            "subtype_constraints",
+            "functions",
+            "procedures",
+            "constants",
+            "variables",
+            "statements",
+            "remark_items",
+        ],
+        "Declarations::Rule" => &[
+            "applies_to",
+            "types",
+            "entities",
+            "subtype_constraints",
+            "functions",
+            "procedures",
+            "constants",
+            "variables",
+            "statements",
+            "where_rules",
+            "informal_propositions",
+            "remark_items",
+        ],
+        "Declarations::Interface" => &["items"],
+        "Statements::If" => &["statements", "else_statements"],
+        "Statements::Repeat" | "Statements::Alias" | "Statements::Compound" => &["statements"],
+        _ => &[],
     }
 }
 
@@ -1703,8 +1794,9 @@ mod index_tests {
             .find(|e| e.class == "Entity")
             .expect("entity entry");
         assert_eq!(entity.line, 2);
-        // The newline-aware end: END_ENTITY's line + 1.
-        assert_eq!(entity.end_line, Some(5));
+        // Ruby end_line = line_number(offset + formatted length): the
+        // entity's formatted text spans its END_ENTITY line.
+        assert_eq!(entity.end_line, Some(4));
         // Document order: the schema precedes its entity.
         let schema = index
             .entries
@@ -1725,10 +1817,11 @@ mod index_tests {
         // node (same_start wins) — the attribute on line 3.
         let nearest = index.nearest_node_to(3).expect("nearest");
         assert_eq!(nearest.class, "Attribute");
-        // After END_ENTITY, the entity's newline-aware end covers the
-        // remark line — same_end wins (Ruby's semantics).
+        // After the entity's END_ENTITY the remark line carries no node
+        // span except the file container's (Ruby's index over formatted
+        // lengths) — same_end wins on the ExpFile.
         let nearest = index.nearest_node_to(5).expect("nearest");
-        assert_eq!(nearest.class, "Entity");
+        assert_eq!(nearest.class, "ExpFile");
     }
 
     #[test]
@@ -2406,19 +2499,22 @@ mod untagged_tests {
     }
 
     #[test]
-    fn remark_between_scopes_attaches_to_the_prior_scope() {
-        // A remark on its own line after END_ENTITY: the entity's
-        // newline-aware end covers the remark's line (Ruby's
-        // line_number(offset + source.length) semantics), so same_end
-        // wins and the remark attaches to the entity.
+    fn remark_between_scopes_lands_on_the_file_root() {
+        // A remark on its own line after END_ENTITY: no node spans the
+        // line under Ruby's formatted-length index, so the fallback
+        // nearest is the file container — ExpFile takes it untagged,
+        // unplaced, and nothing renders it (conservation counts it as
+        // dropped).
         let source = "SCHEMA demo;\n  ENTITY thing;\n    name : STRING;\n  END_ENTITY;\n  -- why\nEND_SCHEMA;\n";
         let wire = wire_with_untagged(source);
         let entity = wire.pointer("/schemas/0/entities/0").expect("entity");
-        let remarks = entity
-            .get("remarks")
+        assert!(entity.get("remarks").is_none(), "no plain remarks on entity");
+        let root = wire
+            .get("untagged_remarks")
             .and_then(Value::as_array)
-            .expect("remarks");
-        assert_eq!(remarks[0], Value::String("why".to_string()));
+            .expect("root untagged");
+        assert_eq!(root.len(), 1);
+        assert_eq!(root[0].get("text"), Some(&Value::String("why".to_string())));
     }
     #[test]
     fn inline_remark_on_an_end_scope_line_attaches_to_the_scope() {
@@ -2487,14 +2583,25 @@ mod untagged_tests {
     }
 
     #[test]
-    fn remark_after_end_schema_attaches_to_the_schema() {
+    fn remark_after_end_schema_lands_on_the_file_root() {
+        // After END_SCHEMA no node spans the closing-note line; the
+        // fallback nearest is the ExpFile container (Ruby lane verified:
+        // untagged, unplaced, never rendered).
         let source = "SCHEMA demo;\n  ENTITY thing;\n    name : STRING;\n  END_ENTITY;\nEND_SCHEMA;\n-- closing note\n";
         let wire = wire_with_untagged(source);
         let schema = wire.pointer("/schemas/0").expect("schema");
-        let remarks = schema
-            .get("remarks")
+        assert!(
+            schema.get("remarks").is_none(),
+            "no plain remarks on schema"
+        );
+        let root = wire
+            .get("untagged_remarks")
             .and_then(Value::as_array)
-            .expect("remarks");
-        assert_eq!(remarks[0], Value::String("closing note".to_string()));
+            .expect("root untagged");
+        assert_eq!(root.len(), 1);
+        assert_eq!(
+            root[0].get("text"),
+            Some(&Value::String("closing note".to_string()))
+        );
     }
 }

@@ -12,6 +12,7 @@ pub mod attach;
 pub mod batch;
 pub mod compiled_set;
 pub mod extract;
+pub mod format_len;
 pub mod model;
 pub mod model_json;
 pub mod p21;
