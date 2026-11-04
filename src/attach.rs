@@ -422,7 +422,6 @@ fn supports_remarks(class: &str) -> bool {
             | "EnumerationItem"
             | "RemarkItem"
             | "InterfacedItem"
-            | "Interface"
             | "Aggregate"
             | "Generic"
             | "GenericEntity"
