@@ -1483,24 +1483,13 @@ impl WireIndex {
         if let Some(last) = same_end.last() {
             return Some(last);
         }
-        let mut containing: Vec<&IndexEntry> = self
+        let containing: Vec<&IndexEntry> = self
             .spanning(remark_line)
             .into_iter()
             .filter(|e| is_remark_scope(&e.class))
             .collect();
         if !containing.is_empty() {
-            // ExpFile is a file-level container: remarks inside a schema
-            // belong to the schema.
-            containing.retain(|e| e.class != "ExpFile");
-            let candidates: Vec<&IndexEntry> = if containing.is_empty() {
-                self.spanning(remark_line)
-                    .into_iter()
-                    .filter(|e| is_remark_scope(&e.class))
-                    .collect()
-            } else {
-                containing
-            };
-            candidates
+            containing
                 .into_iter()
                 .min_by_key(|e| e.end_line.unwrap_or(0) - e.line)
         } else {
@@ -1567,7 +1556,11 @@ fn collect(
                 map.get("source_offset").and_then(Value::as_u64),
             ) {
                 let suffix = class.rsplit("::").next().unwrap_or(class).to_string();
-                if is_semantic(&suffix) {
+                // The Ruby index never records ExpFile: the model root
+                // carries no source offsets of its own, so nearest never
+                // falls back to it (preamble remarks attach to the first
+                // semantic node instead).
+                if is_semantic(&suffix) && suffix != "ExpFile" {
                     let end_line = map
                         .get("source_end_offset")
                         .and_then(Value::as_u64)
