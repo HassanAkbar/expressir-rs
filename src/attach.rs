@@ -1374,6 +1374,8 @@ pub struct IndexEntry {
     pub end_line: Option<usize>,
     pub offset: Option<u64>,
     pub order: usize,
+    /// The raw `source_end_offset` before the newline adjustment.
+    raw_end_offset: Option<u64>,
     /// The JSON pointer of the collection-attribute owner (Ruby's
     /// `owner`), and the collection attribute this node came from.
     pub owner_ptr: Option<String>,
@@ -1433,6 +1435,22 @@ impl WireIndex {
                 entry.offset = Some(schema_offset);
                 entry.line = line_of(&starts, schema_offset);
             }
+        }
+        // Ruby's end_line = line_number(offset + source.length), and the
+        // builder's source includes the node's trailing newline — so a
+        // node whose last byte is followed by a newline ends one line
+        // later than the raw slice arithmetic suggests.
+        let bytes = source.as_bytes();
+        let source_len = source.len();
+        for entry in &mut entries {
+            entry.end_line = entry.raw_end_offset.map(|end| {
+                let base = line_of(&starts, end);
+                if end < source_len as u64 && bytes[end as usize] == b'\n' {
+                    base + 1
+                } else {
+                    base
+                }
+            });
         }
         WireIndex { entries, starts }
     }
@@ -1583,6 +1601,7 @@ fn collect(
                         order: out.len(),
                         owner_ptr: owner_ptr.clone(),
                         collection,
+                        raw_end_offset: map.get("source_end_offset").and_then(Value::as_u64),
                     });
                 }
             }
@@ -1668,7 +1687,8 @@ mod index_tests {
             .find(|e| e.class == "Entity")
             .expect("entity entry");
         assert_eq!(entity.line, 2);
-        assert_eq!(entity.end_line, Some(4));
+        // The newline-aware end: END_ENTITY's line + 1.
+        assert_eq!(entity.end_line, Some(5));
         // Document order: the schema precedes its entity.
         let schema = index
             .entries
@@ -1689,9 +1709,10 @@ mod index_tests {
         // node (same_start wins) — the attribute on line 3.
         let nearest = index.nearest_node_to(3).expect("nearest");
         assert_eq!(nearest.class, "Attribute");
-        // After END_SCHEMA, the last-ended scope is the schema.
+        // After END_ENTITY, the entity's newline-aware end covers the
+        // remark line — same_end wins (Ruby's semantics).
         let nearest = index.nearest_node_to(5).expect("nearest");
-        assert_eq!(nearest.class, "Schema");
+        assert_eq!(nearest.class, "Entity");
     }
 
     #[test]
@@ -2353,24 +2374,19 @@ mod untagged_tests {
     }
 
     #[test]
-    fn remark_between_scopes_falls_to_the_root_and_drops() {
-        // A remark on its own line between END_ENTITY and END_SCHEMA:
-        // the ExpFile spans from the schema start, so the nearest
-        // containing node is the ROOT — whose wire map never serializes
-        // remarks, exactly like the Ruby lane (the conservation suite
-        // expects such remarks to be lost).
+    fn remark_between_scopes_attaches_to_the_prior_scope() {
+        // A remark on its own line after END_ENTITY: the entity's
+        // newline-aware end covers the remark's line (Ruby's
+        // line_number(offset + source.length) semantics), so same_end
+        // wins and the remark attaches to the entity.
         let source = "SCHEMA demo;\n  ENTITY thing;\n    name : STRING;\n  END_ENTITY;\n  -- why\nEND_SCHEMA;\n";
         let wire = wire_with_untagged(source);
-        let schema = wire.pointer("/schemas/0").expect("schema");
-        assert!(
-            schema.get("remarks").and_then(Value::as_array).is_none(),
-            "the schema must not carry the between-scope remark"
-        );
-        let root_remarks = wire
+        let entity = wire.pointer("/schemas/0/entities/0").expect("entity");
+        let remarks = entity
             .get("remarks")
             .and_then(Value::as_array)
-            .expect("root remarks");
-        assert_eq!(root_remarks[0], Value::String("why".to_string()));
+            .expect("remarks");
+        assert_eq!(remarks[0], Value::String("why".to_string()));
     }
     #[test]
     fn inline_remark_on_an_end_scope_line_attaches_to_the_scope() {
