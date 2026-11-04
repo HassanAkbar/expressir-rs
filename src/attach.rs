@@ -1421,6 +1421,19 @@ impl WireIndex {
         for (i, entry) in entries.iter_mut().enumerate() {
             entry.order = i;
         }
+        // The Ruby ExpFile entry spans from the FIRST SCHEMA (its
+        // source starts there, not at byte 0), so preamble remarks fall
+        // outside every span and land on the root — which the ExpFile
+        // wire map does not serialize.
+        let first_schema_offset = root
+            .pointer("/schemas/0/source_offset")
+            .and_then(Value::as_u64);
+        if let (Some(entry), Some(schema_offset)) = (entries.first_mut(), first_schema_offset) {
+            if entry.class == "ExpFile" {
+                entry.offset = Some(schema_offset);
+                entry.line = line_of(&starts, schema_offset);
+            }
+        }
         WireIndex { entries, starts }
     }
 
@@ -1556,11 +1569,7 @@ fn collect(
                 map.get("source_offset").and_then(Value::as_u64),
             ) {
                 let suffix = class.rsplit("::").next().unwrap_or(class).to_string();
-                // The Ruby index never records ExpFile: the model root
-                // carries no source offsets of its own, so nearest never
-                // falls back to it (preamble remarks attach to the first
-                // semantic node instead).
-                if is_semantic(&suffix) && suffix != "ExpFile" {
+                if is_semantic(&suffix) {
                     let end_line = map
                         .get("source_end_offset")
                         .and_then(Value::as_u64)
@@ -2344,21 +2353,25 @@ mod untagged_tests {
     }
 
     #[test]
-    fn remark_between_scopes_falls_to_the_enclosing_schema() {
-        // A remark on its own line between END_ENTITY and END_SCHEMA
-        // attaches to the schema (the nearest node ending there) — the
-        // Ruby end-scope branch fires only when the remark SHARES the
-        // END_ line.
+    fn remark_between_scopes_falls_to_the_root_and_drops() {
+        // A remark on its own line between END_ENTITY and END_SCHEMA:
+        // the ExpFile spans from the schema start, so the nearest
+        // containing node is the ROOT — whose wire map never serializes
+        // remarks, exactly like the Ruby lane (the conservation suite
+        // expects such remarks to be lost).
         let source = "SCHEMA demo;\n  ENTITY thing;\n    name : STRING;\n  END_ENTITY;\n  -- why\nEND_SCHEMA;\n";
         let wire = wire_with_untagged(source);
         let schema = wire.pointer("/schemas/0").expect("schema");
-        let remarks = schema
+        assert!(
+            schema.get("remarks").and_then(Value::as_array).is_none(),
+            "the schema must not carry the between-scope remark"
+        );
+        let root_remarks = wire
             .get("remarks")
             .and_then(Value::as_array)
-            .expect("remarks");
-        assert_eq!(remarks[0], Value::String("why".to_string()));
+            .expect("root remarks");
+        assert_eq!(root_remarks[0], Value::String("why".to_string()));
     }
-
     #[test]
     fn inline_remark_on_an_end_scope_line_attaches_to_the_scope() {
         let source = "SCHEMA demo;\n  ENTITY thing;\n    name : STRING;\n  END_ENTITY; -- why\nEND_SCHEMA;\n";
