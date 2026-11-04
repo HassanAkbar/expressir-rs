@@ -1370,6 +1370,9 @@ mod span_tests {
 pub struct IndexEntry {
     pub ptr: String,
     pub class: String,
+    /// The full wire `_class` — the placement predicates test
+    /// namespace membership (`::Statements::`), which the suffix loses.
+    pub full_class: String,
     pub line: usize,
     pub end_line: Option<usize>,
     pub offset: Option<u64>,
@@ -1606,7 +1609,8 @@ fn collect(
                         .map(|end| line_of(starts, end));
                     out.push(IndexEntry {
                         ptr: ptr.to_string(),
-                        class: suffix,
+                        class: suffix.clone(),
+                        full_class: class.to_string(),
                         line: line_of(starts, offset),
                         end_line,
                         offset: Some(offset),
@@ -1759,14 +1763,19 @@ pub const REGION_OTHERWISE: &str = "otherwise";
 /// line (`Model::TakesInlineRemark` = Statement + Interface).
 #[allow(dead_code)] // staged: consumed by the untagged orchestrator
 fn takes_inline_remark(class: &str) -> bool {
-    class.contains("::Statements::") || class == "Interface"
+    // `class` may be the suffix or the full wire name; accept either.
+    let has_ns = class.contains("::Statements::");
+    let is_interface = class == "Interface" || class.ends_with("::Interface");
+    has_ns || is_interface
 }
 
 /// Executable-statement owners for region lookup (`Model::Statement`
-/// or function/rule/procedure heads).
-#[allow(dead_code)] // staged: consumed by the untagged orchestrator
-fn is_statement_or_body_owner(class: &str) -> bool {
-    class.contains("::Statements::") || matches!(class, "Function" | "Procedure" | "Rule")
+/// or function/rule/procedure heads.
+fn is_statement_or_body_owner_full(full_class: &str) -> bool {
+    full_class.contains("::Statements::")
+        || full_class.ends_with("::Function")
+        || full_class.ends_with("::Procedure")
+        || full_class.ends_with("::Rule")
 }
 
 use regex::Regex;
@@ -1997,9 +2006,19 @@ fn statement_region_for<'a>(index: &'a WireIndex, lines: &[&str], line: usize) -
         .spanning(line)
         .into_iter()
         .filter(|e| e.line <= line && e.end_line.is_some_and(|end| end >= line))
-        .filter(|e| is_statement_or_body_owner(&e.class))
+        .filter(|e| is_statement_or_body_owner_full(&e.full_class))
         .collect();
     candidates.sort_by_key(|e| e.order);
+    #[cfg(test)]
+    if std::env::var("REGION_DBG").is_ok() {
+        eprintln!(
+            "candidates@{line}: {:?}",
+            candidates
+                .iter()
+                .map(|e| format!("{} {}..{:?}", e.class, e.line, e.end_line))
+                .collect::<Vec<_>>()
+        );
+    }
     let enclosing = innermost(candidates)?;
     let mut children: Vec<&IndexEntry> = index
         .entries
@@ -2163,7 +2182,8 @@ fn inline_target(
         .starting_at(remark_line)
         .into_iter()
         .filter(|e| {
-            takes_inline_remark(&e.class) && e.offset.is_some_and(|o| o < remark_position as u64)
+            takes_inline_remark(&e.full_class)
+                && e.offset.is_some_and(|o| o < remark_position as u64)
         })
         .collect();
     if started_here.is_empty() {
@@ -2417,32 +2437,40 @@ mod untagged_tests {
         let source =
             "SCHEMA demo;\n  PROCEDURE p;\n    x := 1; -- why\n  END_PROCEDURE;\nEND_SCHEMA;\n";
         let wire = wire_with_untagged(source);
-        // The remark lands on the enclosing procedure when no indexed
-        // statement node starts at that position — the assignment is
-        // not a wire-level collection child.
-        let schema = wire.pointer("/schemas/0").expect("schema");
-        let remarks = schema.get("remarks").and_then(Value::as_array);
-        let owner = wire.pointer("/schemas/0/procedures/0").expect("procedure");
-        let fn_remarks = owner.get("remarks").and_then(Value::as_array);
-        let hit = [remarks, fn_remarks]
-            .into_iter()
-            .flatten()
-            .flatten()
-            .any(|r| r == &Value::String("why".to_string()));
-        assert!(hit, "the remark attaches somewhere in the chain");
+        // `x := 1; -- why` trails the Assignment: the remark lives in
+        // untagged_remarks ONLY — statement classes carry no plain
+        // remarks attribute (the formatter reads placement from here).
+        let stmt = wire
+            .pointer("/schemas/0/procedures/0/statements/0")
+            .expect("statement");
+        assert!(
+            stmt.get("remarks").is_none(),
+            "no plain remarks on Assignment"
+        );
+        let infos = stmt
+            .get("untagged_remarks")
+            .and_then(Value::as_array)
+            .expect("infos");
+        assert_eq!(infos[0].get("text").and_then(Value::as_str), Some("why"));
+        assert_eq!(
+            infos[0].get("placement").and_then(Value::as_str),
+            Some("inline")
+        );
     }
 
     #[test]
     fn body_comment_before_the_next_statement_is_leading() {
         // The next statement must carry remarks — only Alias and Repeat
-        // do — for the LEADING attachment to be visible.
-        let source = "SCHEMA demo;\n  PROCEDURE p;\n    x := 1;\n    -- why\n    REPEAT i := 1 TO 2;\n      x := x + 1;\n    END_REPEAT;\n  END_PROCEDURE;\nEND_SCHEMA;\n";
+        // do — for the LEADING attachment to be visible. The comment sits
+        // directly above the Repeat with no covering statement span
+        // between them (the region machinery's contract).
+        let source = "SCHEMA demo;\n  PROCEDURE p;\n    -- why\n    REPEAT i := 1 TO 2;\n      x := x + 1;\n    END_REPEAT;\n  END_PROCEDURE;\nEND_SCHEMA;\n";
         let wire = wire_with_untagged(source);
         // An own-line comment before the next statement is LEADING on
         // that statement (the Ruby region machinery's contract).
         let stmt = wire
-            .pointer("/schemas/0/procedures/0/statements/1")
-            .expect("second statement");
+            .pointer("/schemas/0/procedures/0/statements/0")
+            .expect("first statement");
         let remarks = stmt
             .get("remarks")
             .and_then(Value::as_array)
