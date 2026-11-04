@@ -1736,9 +1736,7 @@ fn collection_registry(class: &str) -> &'static [&'static str] {
             "informal_propositions",
             "remark_items",
         ],
-        "Declarations::Type" => {
-            &["where_rules", "informal_propositions", "remark_items"]
-        }
+        "Declarations::Type" => &["where_rules", "informal_propositions", "remark_items"],
         "Declarations::Function" | "Declarations::Procedure" => &[
             "parameters",
             "types",
@@ -2508,7 +2506,10 @@ mod untagged_tests {
         let source = "SCHEMA demo;\n  ENTITY thing;\n    name : STRING;\n  END_ENTITY;\n  -- why\nEND_SCHEMA;\n";
         let wire = wire_with_untagged(source);
         let entity = wire.pointer("/schemas/0/entities/0").expect("entity");
-        assert!(entity.get("remarks").is_none(), "no plain remarks on entity");
+        assert!(
+            entity.get("remarks").is_none(),
+            "no plain remarks on entity"
+        );
         let root = wire
             .get("untagged_remarks")
             .and_then(Value::as_array)

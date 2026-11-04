@@ -86,7 +86,10 @@ fn corpus_files(expressir_dir: &Path) -> Vec<PathBuf> {
     files
 }
 
-fn ruby_lengths(expressir_dir: &Path, wires: &std::collections::BTreeMap<String, Value>) -> Result<Value, String> {
+fn ruby_lengths(
+    expressir_dir: &Path,
+    wires: &std::collections::BTreeMap<String, Value>,
+) -> Result<Value, String> {
     let request = json!({ "files": wires });
     let mut child = Command::new("bundle")
         .arg("exec")
@@ -135,10 +138,9 @@ fn rust_lengths(wire: &Value) -> Vec<(String, u64, usize, usize)> {
             return;
         };
         let class = obj.get("_class").and_then(Value::as_str);
-        if let (Some(class), Some(offset)) = (
-            class,
-            obj.get("source_offset").and_then(Value::as_u64),
-        ) {
+        if let (Some(class), Some(offset)) =
+            (class, obj.get("source_offset").and_then(Value::as_u64))
+        {
             let suffix = class.rsplit("::").next().unwrap_or(class);
             let len = map.get(ptr).map(|p| p.len).unwrap_or(usize::MAX);
             let nl = map.get(ptr).map(|p| p.nl).unwrap_or(usize::MAX);
@@ -149,12 +151,7 @@ fn rust_lengths(wire: &Value) -> Vec<(String, u64, usize, usize)> {
             if let Some(Value::Array(items)) = obj.get("actions") {
                 for (i, item) in items.iter().enumerate() {
                     if let Some(stmt) = item.get("statement").filter(|v| !v.is_null()) {
-                        walk(
-                            stmt,
-                            &format!("{ptr}/actions/{i}/statement"),
-                            map,
-                            out,
-                        );
+                        walk(stmt, &format!("{ptr}/actions/{i}/statement"), map, out);
                     }
                 }
             }
@@ -308,7 +305,10 @@ fn formatted_lengths_match_ruby_over_the_corpus() {
                 let ak = (actual[j].0.as_str(), actual[j].1);
                 match ek.cmp(&ak) {
                     std::cmp::Ordering::Less => {
-                        failures.push(format!("{key}: ruby-only {:?} {}", expected[i], expected[i].2));
+                        failures.push(format!(
+                            "{key}: ruby-only {:?} {}",
+                            expected[i], expected[i].2
+                        ));
                         i += 1;
                     }
                     std::cmp::Ordering::Greater => {
@@ -319,8 +319,12 @@ fn formatted_lengths_match_ruby_over_the_corpus() {
                         if expected[i].2 != actual[j].2 {
                             failures.push(format!(
                                 "{key}: {}|{} len ruby={} rust={} nl ruby={} rust={}",
-                                expected[i].0, expected[i].1, expected[i].2, actual[j].2,
-                                expected[i].3, actual[j].3
+                                expected[i].0,
+                                expected[i].1,
+                                expected[i].2,
+                                actual[j].2,
+                                expected[i].3,
+                                actual[j].3
                             ));
                         }
                         i += 1;
@@ -340,6 +344,11 @@ fn formatted_lengths_match_ruby_over_the_corpus() {
         failures.is_empty(),
         "formatted-length drift over {} files:\n{}",
         parsed.len(),
-        failures.iter().take(40).cloned().collect::<Vec<_>>().join("\n")
+        failures
+            .iter()
+            .take(40)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n")
     );
 }

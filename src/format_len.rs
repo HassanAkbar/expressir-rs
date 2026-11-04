@@ -121,12 +121,7 @@ fn fmt(v: Option<&Value>, key: &str, ptr: &str, map: &mut HashMap<String, Piece>
     }
 }
 
-fn fmt_each(
-    v: &Value,
-    key: &str,
-    ptr: &str,
-    map: &mut HashMap<String, Piece>,
-) -> Vec<Piece> {
+fn fmt_each(v: &Value, key: &str, ptr: &str, map: &mut HashMap<String, Piece>) -> Vec<Piece> {
     arr(v, key)
         .iter()
         .enumerate()
@@ -171,7 +166,8 @@ fn dispatch(v: &Value, ptr: &str, map: &mut HashMap<String, Piece>) -> Piece {
         "Declarations::SchemaVersionItem" | "Declarations::InterfacedItem" | "Cache" => {
             Piece::default()
         }
-        "Declarations::Attribute" | "Declarations::DerivedAttribute"
+        "Declarations::Attribute"
+        | "Declarations::DerivedAttribute"
         | "Declarations::InverseAttribute" => attribute(v, ptr, map),
         "Declarations::Constant" => dispatched_len(&[
             Piece::flat(str_field(v, "id").chars().count()),
@@ -587,8 +583,7 @@ fn binary_op(op: &str) -> &'static str {
 fn precedence(op: &str) -> u8 {
     match op {
         "EXPONENTIATION" => 1,
-        "MULTIPLICATION" | "REAL_DIVISION" | "INTEGER_DIVISION" | "MODULO" | "AND"
-        | "COMBINE" => 2,
+        "MULTIPLICATION" | "REAL_DIVISION" | "INTEGER_DIVISION" | "MODULO" | "AND" | "COMBINE" => 2,
         "SUBTRACTION" | "ADDITION" | "OR" | "XOR" => 3,
         _ => 4,
     }
@@ -641,10 +636,7 @@ fn unary_expression(v: &Value, ptr: &str, map: &mut HashMap<String, Piece>) -> P
     if needs_parens {
         len += 2;
     }
-    Piece {
-        len,
-        nl: inner.nl,
-    }
+    Piece { len, nl: inner.nl }
 }
 
 fn binary_supertype_expression(v: &Value, ptr: &str, map: &mut HashMap<String, Piece>) -> Piece {
@@ -655,7 +647,11 @@ fn binary_supertype_expression(v: &Value, ptr: &str, map: &mut HashMap<String, P
         let higher = child(v, key)
             .map(|o| {
                 class_of(o) == "SupertypeExpressions::BinarySupertypeExpression"
-                    && (if str_field(o, "operator") == "AND" { 1 } else { 2 }) > my_prec
+                    && (if str_field(o, "operator") == "AND" {
+                        1
+                    } else {
+                        2
+                    }) > my_prec
             })
             .unwrap_or(false);
         (higher, fmt(Some(v), key, ptr, map))
@@ -775,9 +771,7 @@ fn attribute(v: &Value, ptr: &str, map: &mut HashMap<String, Piece>) -> Piece {
 }
 
 fn entity(v: &Value, ptr: &str, map: &mut HashMap<String, Piece>) -> Piece {
-    let mut header = vec![
-        Piece::flat(7 + str_field(v, "id").chars().count()),
-    ];
+    let mut header = vec![Piece::flat(7 + str_field(v, "id").chars().count())];
     let abstract_flag = is_truthy(v, "abstract");
     let has_supertype_expr = is_truthy(v, "supertype_expression");
     if abstract_flag && !has_supertype_expr {
@@ -867,7 +861,13 @@ fn entity(v: &Value, ptr: &str, map: &mut HashMap<String, Piece>) -> Piece {
 
 fn scope_blocks(v: &Value, ptr: &str, map: &mut HashMap<String, Piece>) -> Vec<Piece> {
     let mut parts: Vec<Piece> = Vec::new();
-    for key in ["types", "entities", "subtype_constraints", "functions", "procedures"] {
+    for key in [
+        "types",
+        "entities",
+        "subtype_constraints",
+        "functions",
+        "procedures",
+    ] {
         if positive(v, key) {
             let items = fmt_each(v, key, ptr, map);
             parts.push(indent(join_nl(&items)));
@@ -946,7 +946,9 @@ fn rule(v: &Value, ptr: &str, map: &mut HashMap<String, Piece>) -> Piece {
         let cls = class_of(s);
         let drop = if cls == "Statements::Alias" || cls == "Statements::Repeat" {
             match child(s, "statements") {
-                Some(Value::Array(items)) => items.iter().all(|x| class_of(x) == "Statements::Null"),
+                Some(Value::Array(items)) => {
+                    items.iter().all(|x| class_of(x) == "Statements::Null")
+                }
                 _ => false,
             }
         } else {
@@ -978,17 +980,10 @@ fn interface(v: &Value, ptr: &str, map: &mut HashMap<String, Piece>) -> Piece {
         "USE" => 3,
         _ => 9,
     };
-    let mut parts = vec![
-        Piece::flat(kw_len + 6),
-        fmt(Some(v), "schema", ptr, map),
-    ];
+    let mut parts = vec![Piece::flat(kw_len + 6), fmt(Some(v), "schema", ptr, map)];
     if positive(v, "items") {
         let items = fmt_each(v, "items", ptr, map);
-        let inner = concat(&[
-            Piece::flat(1),
-            join_sep(&items, ",\n "),
-            Piece::flat(1),
-        ]);
+        let inner = concat(&[Piece::flat(1), join_sep(&items, ",\n "), Piece::flat(1)]);
         parts.push(Piece {
             len: 1 + indent(inner).len,
             nl: 1 + indent(inner).nl,
@@ -1053,20 +1048,12 @@ fn enumeration(v: &Value, ptr: &str, map: &mut HashMap<String, Piece>) -> Piece 
         parts.push(fmt(Some(v), "based_on", ptr, map));
         if positive(v, "items") {
             let items = fmt_each(v, "items", ptr, map);
-            let inner = concat(&[
-                Piece::flat(1),
-                join_sep(&items, ",\n "),
-                Piece::flat(1),
-            ]);
+            let inner = concat(&[Piece::flat(1), join_sep(&items, ",\n "), Piece::flat(1)]);
             parts.push(concat(&[Piece { len: 6, nl: 1 }, indent(inner)]));
         }
     } else if positive(v, "items") {
         let items = fmt_each(v, "items", ptr, map);
-        let inner = concat(&[
-            Piece::flat(1),
-            join_sep(&items, ",\n "),
-            Piece::flat(1),
-        ]);
+        let inner = concat(&[Piece::flat(1), join_sep(&items, ",\n "), Piece::flat(1)]);
         parts.push(concat(&[Piece { len: 4, nl: 1 }, indent(inner)]));
     }
     dispatched_len(&parts)
@@ -1087,20 +1074,12 @@ fn select(v: &Value, ptr: &str, map: &mut HashMap<String, Piece>) -> Piece {
         parts.push(fmt(Some(v), "based_on", ptr, map));
         if items_positive {
             let items = fmt_each(v, "items", ptr, map);
-            let inner = concat(&[
-                Piece::flat(1),
-                join_sep(&items, ",\n "),
-                Piece::flat(1),
-            ]);
+            let inner = concat(&[Piece::flat(1), join_sep(&items, ",\n "), Piece::flat(1)]);
             parts.push(concat(&[Piece { len: 6, nl: 1 }, indent(inner)]));
         }
     } else if items_positive {
         let items = fmt_each(v, "items", ptr, map);
-        let inner = concat(&[
-            Piece::flat(1),
-            join_sep(&items, ",\n "),
-            Piece::flat(1),
-        ]);
+        let inner = concat(&[Piece::flat(1), join_sep(&items, ",\n "), Piece::flat(1)]);
         let ind = indent(inner);
         parts.push(Piece {
             len: 1 + ind.len,
@@ -1123,10 +1102,7 @@ fn case(v: &Value, ptr: &str, map: &mut HashMap<String, Piece>) -> Piece {
     }
     if is_truthy(v, "otherwise_statement") {
         let stmt = fmt(Some(v), "otherwise_statement", ptr, map);
-        parts.push(join_nl(&[
-            Piece::flat(11),
-            indent(stmt),
-        ]));
+        parts.push(join_nl(&[Piece::flat(11), indent(stmt)]));
     }
     parts.push(Piece::flat(9));
     join_nl(&parts)
@@ -1220,7 +1196,10 @@ mod tests {
                  "expression": {"_class": "Expressir::Model::References::SimpleReference", "id": "i"}},
             ],
         });
-        assert_eq!(len_of(v), "REPEAT i := 1 TO n;\n  t := i;\nEND_REPEAT;".len());
+        assert_eq!(
+            len_of(v),
+            "REPEAT i := 1 TO n;\n  t := i;\nEND_REPEAT;".len()
+        );
     }
 
     #[test]
