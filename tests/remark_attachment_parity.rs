@@ -260,6 +260,7 @@ fn rust_summary(wire: &Value) -> Value {
 }
 
 // one-file attachment parity dump for /tmp/one.exp
+#[cfg(test)]
 #[test]
 fn attachment_matches_ruby_over_the_corpus() {
     let Some(expressir_dir) = expressir_dir() else {

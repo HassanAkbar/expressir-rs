@@ -494,13 +494,15 @@ pub fn find_by_exact_path_mut<'a>(root: &'a mut Value, path: &str) -> Option<&'a
 /// RemarkInfo entry is written on EVERY model element (tag == nil).
 /// The Ruby RemarkInfo wire map carries text/format/tag/placement/region.
 pub fn add_remark_to(node: &mut Value, text: &str) -> bool {
-    add_remark_tagged(node, text, None, None, None, None)
+    add_remark_tagged(node, text, None, None, None, None, None)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn add_remark_tagged(
     node: &mut Value,
     text: &str,
     tag: Option<&str>,
+    format: Option<&str>,
     placement: Option<&'static str>,
     region: Option<&'static str>,
     source_offset: Option<usize>,
@@ -521,11 +523,7 @@ pub fn add_remark_tagged(
         }
     }
     if tag.is_none() {
-        let format = if placement == Some("inline") {
-            crate::remark::FORMAT_EMBEDDED
-        } else {
-            crate::remark::FORMAT_TAIL
-        };
+        let format = format.unwrap_or(crate::remark::FORMAT_TAIL);
         let mut info = serde_json::json!({ "text": text, "format": format });
         if let Some(placement) = placement {
             info["placement"] = Value::String(placement.to_string());
@@ -2253,7 +2251,7 @@ pub fn attach_untagged_remarks(root: &mut Value, source: &str) -> Vec<usize> {
                 .map(|e| e.ptr.clone());
             if let Some(ptr) = matched {
                 if let Some(node) = root.pointer_mut(&ptr) {
-                    add_remark_with_offset(node, &remark.text, remark.position);
+                    add_remark_with_offset(node, &remark.text, remark.format, remark.position);
                     attached.push(remark.position);
                     continue;
                 }
@@ -2265,7 +2263,7 @@ pub fn attach_untagged_remarks(root: &mut Value, source: &str) -> Vec<usize> {
             find_body_comment_target(root, &index, &lines, remark.line, remark.position);
         if let Some(ptr) = target {
             if let Some(node) = root.pointer_mut(&ptr) {
-                add_remark_with_placement(node, &remark.text, placement, region);
+                add_remark_with_placement(node, &remark.text, remark.format, placement, region);
                 attached.push(remark.position);
                 continue;
             }
@@ -2275,7 +2273,7 @@ pub fn attach_untagged_remarks(root: &mut Value, source: &str) -> Vec<usize> {
         if let Some(entry) = index.nearest_node_to(remark.line) {
             let ptr = entry.ptr.clone();
             if let Some(node) = root.pointer_mut(&ptr) {
-                add_remark_with_offset(node, &remark.text, remark.position);
+                add_remark_with_offset(node, &remark.text, remark.format, remark.position);
                 attached.push(remark.position);
             }
         }
@@ -2323,18 +2321,19 @@ fn find_body_comment_target(
 }
 
 /// `add_remark` with a source offset (tail-flavored, no placement).
-fn add_remark_with_offset(node: &mut Value, text: &str, offset: usize) {
-    add_remark_tagged(node, text, None, None, None, Some(offset));
+fn add_remark_with_offset(node: &mut Value, text: &str, format: &str, offset: usize) {
+    add_remark_tagged(node, text, None, Some(format), None, None, Some(offset));
 }
 
 /// `add_remark` with placement/region (embedded or body comments).
 fn add_remark_with_placement(
     node: &mut Value,
     text: &str,
+    format: &str,
     placement: Option<&'static str>,
     region: Option<&'static str>,
 ) {
-    add_remark_tagged(node, text, None, placement, region, None);
+    add_remark_tagged(node, text, None, Some(format), placement, region, None);
 }
 
 #[cfg(test)]
