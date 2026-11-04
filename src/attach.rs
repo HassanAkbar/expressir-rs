@@ -1514,12 +1514,24 @@ impl WireIndex {
         if let Some(last) = same_end.last() {
             return Some(last);
         }
-        let containing: Vec<&IndexEntry> = self
+        let mut containing: Vec<&IndexEntry> = self
             .spanning(remark_line)
             .into_iter()
             .filter(|e| is_remark_scope(&e.class))
             .collect();
         if !containing.is_empty() {
+            // Prefer non-ExpFile nodes (Schema, Entity, ...) when both
+            // span the same range: remarks inside a schema belong to the
+            // schema, and only a remark BEFORE the first schema belongs
+            // to the file container (the preamble special case below).
+            let non_root: Vec<&IndexEntry> = containing
+                .iter()
+                .copied()
+                .filter(|e| e.class != "ExpFile")
+                .collect();
+            if !non_root.is_empty() {
+                containing = non_root;
+            }
             containing
                 .into_iter()
                 .min_by_key(|e| e.end_line.unwrap_or(0) - e.line)
