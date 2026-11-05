@@ -30,7 +30,7 @@ summary = lambda do |node, out|
     node.class.name.to_s.split("::").last,
     node.respond_to?(:id) ? node.id : nil,
     node.source_offset
-  ].compact_map { |part| part.nil? ? "" : part.to_s }.join("|")
+  ].map { |part| part.nil? ? "" : part.to_s }.join("|")
   entry = out[key] ||= {
     "remarks" => [],
     "remark_items" => [],
@@ -59,7 +59,8 @@ summary = lambda do |node, out|
         "text" => u.text,
         "format" => u.format,
         "placement" => u.placement,
-        "region" => u.region
+        "region" => u.region,
+        "source_offset" => u.source_offset
       }
     end
   end
@@ -92,6 +93,7 @@ request["files"].each do |path, wire|
     Expressir::Express::RemarkAttacher.new(source).attach(model)
     out = {}
     summary.call(model, out)
+    out.delete_if { |k| k.start_with?("ExpFile|") }
     result["files"][path] = out
   rescue StandardError => e
     result["errors"][path] = "#{e.class}: #{e.message}"
@@ -176,18 +178,13 @@ fn rust_summary(wire: &Value) -> Value {
         let Some(map) = node.as_object() else {
             return;
         };
-        let class = map
-            .get("_class")
-            .and_then(Value::as_str)
-            .map(|c| c.rsplit("::").next().unwrap_or(c).to_string());
-        if let Some(class) = class {
-            let id = map.get("id").and_then(Value::as_str);
-            let offset = map.get("source_offset").and_then(Value::as_u64);
-            let has_remark_data = map.contains_key("remarks")
-                || map.contains_key("remark_items")
-                || map.contains_key("informal_propositions")
-                || map.contains_key("untagged_remarks");
-            if has_remark_data {
+        let full_class = map.get("_class").and_then(Value::as_str);
+        // The file container never serializes remarks.
+        if full_class != Some("Expressir::Model::ExpFile") {
+            let class = full_class.map(|c| c.rsplit("::").next().unwrap_or(c).to_string());
+            if let Some(class) = class {
+                let id = map.get("id").and_then(Value::as_str);
+                let offset = map.get("source_offset").and_then(Value::as_u64);
                 let key = format!(
                     "{}|{}|{}",
                     class,
@@ -250,20 +247,35 @@ fn rust_summary(wire: &Value) -> Value {
                                 "format": u.get("format"),
                                 "placement": u.get("placement"),
                                 "region": u.get("region"),
+                                "source_offset": u.get("source_offset"),
                             }));
                     }
                 }
             }
         }
-        for (_key, value) in map {
-            match value {
-                Value::Array(items) => {
-                    for item in items {
-                        walk(item, out);
+        // The registry walk: exactly the collections Ruby's summary
+        // visits, including Case's virtual ones.
+        let suffix_full = full_class
+            .and_then(|c| c.strip_prefix("Expressir::Model::"))
+            .unwrap_or("");
+        if suffix_full == "Statements::Case" {
+            if let Some(Value::Array(items)) = map.get("actions") {
+                for item in items {
+                    if let Some(stmt) = item.get("statement").filter(|v| !v.is_null()) {
+                        walk(stmt, out);
                     }
                 }
-                Value::Object(_) => walk(value, out),
-                _ => {}
+            }
+            if let Some(v) = map.get("otherwise_statement").filter(|v| !v.is_null()) {
+                walk(v, out);
+            }
+            return;
+        }
+        for key in expressir_rs::attach::collection_registry(suffix_full) {
+            if let Some(Value::Array(items)) = map.get(*key) {
+                for item in items {
+                    walk(item, out);
+                }
             }
         }
     }
@@ -316,7 +328,7 @@ fn attachment_matches_ruby_over_the_corpus() {
 
     for (key, rust) in &rust_attached {
         if errors.contains_key(key) {
-            eprintln!("skip (ruby lane errored): {key}");
+            eprintln!("skip (ruby lane errored): {key} — {}", errors[key]);
             continue;
         }
         let ruby_remarks = &ruby["files"][key];

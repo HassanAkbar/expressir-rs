@@ -369,16 +369,22 @@ use std::collections::HashMap;
 /// The named-child collections each wire `_class` exposes for path
 /// resolution — the Ruby collection registry + Schema's
 /// SCOPE_DECL_COLLECTIONS, keyed by the class-name suffix.
-fn child_collections(class: &str) -> &'static [&'static str] {
+/// The per-class child collections `ModelElement#children` exposes —
+/// the population `children_by_id` resolves tag paths against. The
+/// virtual entries (an interface's items, a type's enumeration items)
+/// are expanded by `child_by_id`, never listed here.
+fn find_children(class: &str) -> &'static [&'static str] {
     match class.rsplit("::").next().unwrap_or(class) {
+        "ExpFile" => &["schemas"],
         "Schema" => &[
             "constants",
             "types",
             "entities",
             "subtype_constraints",
             "functions",
-            "procedures",
             "rules",
+            "procedures",
+            "remark_items",
         ],
         "Entity" => &[
             "attributes",
@@ -387,14 +393,129 @@ fn child_collections(class: &str) -> &'static [&'static str] {
             "unique_rules",
             "where_rules",
             "informal_propositions",
+            "remark_items",
         ],
-        "Type" => &["enumeration_items", "where_rules"],
-        "Function" | "Procedure" => &["parameters"],
-        "Rule" => &["where_rules"],
-        "Constant" => &["items"],
-        "SubtypeConstraint" => &["where_rules"],
+        "Type" => &["where_rules", "informal_propositions", "remark_items"],
+        "Function" | "Procedure" => &[
+            "parameters",
+            "types",
+            "entities",
+            "subtype_constraints",
+            "functions",
+            "procedures",
+            "constants",
+            "variables",
+            "remark_items",
+        ],
+        "Rule" => &[
+            "types",
+            "entities",
+            "subtype_constraints",
+            "functions",
+            "procedures",
+            "constants",
+            "variables",
+            "where_rules",
+            "informal_propositions",
+            "remark_items",
+        ],
+        "SubtypeConstraint"
+        | "Alias"
+        | "Repeat"
+        | "Parameter"
+        | "Variable"
+        | "Constant"
+        | "WhereRule"
+        | "UniqueRule"
+        | "InformalPropositionRule"
+        | "EnumerationItem"
+        | "RemarkItem"
+        | "InterfacedItem"
+        | "Aggregate"
+        | "Generic"
+        | "GenericEntity"
+        | "QueryExpression" => &["remark_items"],
         _ => &[],
     }
+}
+
+/// One segment of `ModelElement#children_by_id`: the LAST child with
+/// this id wins (Ruby's `to_h` overwrites), matching the class's
+/// `children` order. The wire pointer suffix of the match is returned
+/// relative to `base_ptr`.
+fn child_by_id(node: &Value, base_ptr: &str, part: &str) -> Option<String> {
+    let class = class_suffix(node)?.to_string();
+    let mut found: Option<String> = None;
+    // A schema's interfaces expose their ITEMS as path children.
+    if class == "Schema" {
+        if let Some(interfaces) = node.get("interfaces").and_then(Value::as_array) {
+            for (i, iface) in interfaces.iter().enumerate() {
+                if let Some(items) = iface.get("items").and_then(Value::as_array) {
+                    for (j, item) in items.iter().enumerate() {
+                        if item
+                            .get("id")
+                            .and_then(Value::as_str)
+                            .is_some_and(|v| v.eq_ignore_ascii_case(part))
+                        {
+                            found = Some(format!("{base_ptr}/interfaces/{i}/items/{j}"));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for attr in find_children(&class) {
+        if let Some(items) = node.get(*attr).and_then(Value::as_array) {
+            for (i, item) in items.iter().enumerate() {
+                if item
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .is_some_and(|v| v.eq_ignore_ascii_case(part))
+                {
+                    found = Some(format!("{base_ptr}/{attr}/{i}"));
+                }
+            }
+        }
+        // A type's enumeration items are path children too — on the wire
+        // they live in the underlying ENUMERATION. A schema carries them
+        // through its types; a type through itself.
+        let owned: Vec<(String, &Value)> = if *attr == "types" {
+            node.get("types")
+                .and_then(Value::as_array)
+                .map(|a| {
+                    a.iter()
+                        .enumerate()
+                        .map(|(i, t)| (format!("/types/{i}"), t))
+                        .collect()
+                })
+                .unwrap_or_default()
+        } else if class == "Type" && *attr == "where_rules" {
+            vec![(String::new(), node)]
+        } else {
+            Vec::new()
+        };
+        for (t_suffix, t) in owned {
+            let Some(ut) = t.get("underlying_type").filter(|v| !v.is_null()) else {
+                continue;
+            };
+            if !class_suffix(ut).is_some_and(|c| c == "Enumeration") {
+                continue;
+            }
+            let Some(enum_items) = ut.get("items").and_then(Value::as_array) else {
+                continue;
+            };
+            for (j, item) in enum_items.iter().enumerate() {
+                if item
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .is_some_and(|v| v.eq_ignore_ascii_case(part))
+                {
+                    found = Some(format!("{base_ptr}{t_suffix}/underlying_type/items/{j}"));
+                }
+            }
+        }
+    }
+    found
 }
 
 /// Classes that carry `remarks` (the Ruby Identifier concern plus the
@@ -433,8 +554,8 @@ fn supports_remarks(class: &str) -> bool {
 }
 
 /// `ModelElement#find` over the wire: downcase the parts, strip
-/// `prefix:`es, then resolve schema → registered child collections by
-/// id. Returns the JSON pointer to the resolved node.
+/// `prefix:`es, resolve through `children_by_id` from the model root.
+/// Returns the JSON pointer to the resolved node.
 fn exact_path_pointer(root: &Value, path: &str) -> Option<String> {
     let parts: Vec<String> = path
         .split('.')
@@ -443,40 +564,70 @@ fn exact_path_pointer(root: &Value, path: &str) -> Option<String> {
     if parts.is_empty() {
         return None;
     }
-    let schemas = root.get("schemas")?.as_array()?;
-    let (index, _) = schemas.iter().enumerate().find(|(_, s)| {
-        s.get("id")
-            .and_then(Value::as_str)
-            .is_some_and(|id| id.eq_ignore_ascii_case(&parts[0]))
-    })?;
-    let mut pointer = format!("/schemas/{index}");
-    let mut current = &schemas[index];
-    for part in &parts[1..] {
-        let class = current.get("_class")?.as_str()?.to_string();
-        let mut found = None;
-        for attr in child_collections(&class) {
-            let Some(items) = current.get(*attr).and_then(Value::as_array) else {
-                continue;
-            };
-            for (i, item) in items.iter().enumerate() {
-                if item
-                    .get("id")
-                    .and_then(Value::as_str)
-                    .is_some_and(|v| v.eq_ignore_ascii_case(part))
-                {
-                    found = Some((attr, i));
-                    break;
-                }
-            }
-            if found.is_some() {
-                break;
-            }
+    let mut pointer = String::new();
+    let mut current = root;
+    let mut pending_supertype: Option<&str> = None;
+    for part in &parts {
+        if let Some(supertype) = part.strip_prefix("self\\") {
+            pending_supertype = Some(supertype);
+            continue;
         }
-        let (attr, i) = found?;
-        pointer.push_str(&format!("/{attr}/{i}"));
-        current = current.get(attr)?.get(i)?;
+        let next = if let Some(supertype) = pending_supertype.take() {
+            find_redeclared_by_supertype(current, &pointer, part, supertype)?
+        } else {
+            child_by_id(current, &pointer, part)?
+        };
+        pointer = next;
+        current = root.pointer(&pointer)?;
+    }
+    // A path ending on the SELF qualifier resolves nowhere.
+    if pending_supertype.is_some() {
+        return None;
     }
     Some(pointer)
+}
+
+/// `find_redeclared_by_supertype`: the attribute among the entity's
+/// attribute collections whose id matches and whose supertype_attribute
+/// references the given supertype name.
+fn find_redeclared_by_supertype(
+    scope: &Value,
+    scope_ptr: &str,
+    attr_name: &str,
+    supertype: &str,
+) -> Option<String> {
+    for attr in ["attributes", "derived_attributes", "inverse_attributes"] {
+        if let Some(items) = scope.get(attr).and_then(Value::as_array) {
+            for (i, item) in items.iter().enumerate() {
+                if class_suffix(item).is_none_or(|c| !c.contains("Attribute")) {
+                    continue;
+                }
+                if !item
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .is_some_and(|v| v.eq_ignore_ascii_case(attr_name))
+                {
+                    continue;
+                }
+                // Ruby: group_ref = supertype_attr.ref; group_ref.entity.id.
+                let entity_id = item
+                    .get("supertype_attribute")
+                    .and_then(|st| st.get("ref"))
+                    .and_then(|r| r.get("entity"))
+                    .and_then(|e| e.get("id"))
+                    .and_then(Value::as_str);
+                if entity_id.is_some_and(|v| v.eq_ignore_ascii_case(supertype)) {
+                    return Some(format!("{scope_ptr}/{attr}/{i}"));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Test hook: the resolved pointer for `path` (find_by_exact_path core).
+pub fn find_pointer_debug(root: &Value, path: &str) -> Option<String> {
+    exact_path_pointer(root, path)
 }
 
 /// Ruby `find_by_exact_path`: the path, then a `:`-normalized retry.
@@ -492,10 +643,11 @@ pub fn find_by_exact_path_mut<'a>(root: &'a mut Value, path: &str) -> Option<&'a
 
 /// Ruby `add_remark`: blank bodies drop; the plain `remarks` array is
 /// written only on HasRemarks classes, but the untagged_remarks
-/// RemarkInfo entry is written on EVERY model element (tag == nil).
+/// RemarkInfo entry is written on EVERY model element ONLY for untagged
+/// remarks — a tagged target keeps the bare-text store alone.
 /// The Ruby RemarkInfo wire map carries text/format/tag/placement/region.
-pub fn add_remark_to(node: &mut Value, text: &str) -> bool {
-    add_remark_tagged(node, text, None, None, None, None, None)
+pub fn add_remark_to(node: &mut Value, text: &str, tag: Option<&str>) -> bool {
+    add_remark_tagged(node, text, tag, None, None, None, None)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -591,7 +743,7 @@ mod wire_tests {
         let mut wire = demo_wire();
         {
             let target = find_by_exact_path_mut(&mut wire, "demo.thing.name").expect("resolves");
-            assert!(add_remark_to(target, "a remark on the attribute"));
+            assert!(add_remark_to(target, "a remark on the attribute", None));
         }
         let attrs = wire
             .pointer("/schemas/0/entities/0/attributes")
@@ -612,10 +764,10 @@ mod wire_tests {
         let mut wire = demo_wire();
         let schema = find_by_exact_path_mut(&mut wire, "demo").expect("resolves");
         // Blank remark bodies are dropped (GH-363 behavior).
-        assert!(!add_remark_to(schema, "   "));
+        assert!(!add_remark_to(schema, "   ", None));
         // The ExpFile wrapper carries untagged_remarks like any model
         // element (Ruby supports_remarks? = ModelElement).
-        assert!(add_remark_to(&mut wire, "nope"));
+        assert!(add_remark_to(&mut wire, "nope", None));
     }
 }
 
@@ -770,8 +922,41 @@ fn create_or_find_informal_proposition(
     Some(format!("{ip_ptr}/remark_items/{item_index}"))
 }
 
+/// `supports_remark_items?` — the classes that include
+/// `Model::Identifier` (and therefore `HasRemarkItems`).
+fn supports_remark_items(node: &Value) -> bool {
+    matches!(
+        class_suffix(node).unwrap_or(""),
+        "Attribute"
+            | "DerivedAttribute"
+            | "Entity"
+            | "Function"
+            | "Constant"
+            | "Parameter"
+            | "InformalPropositionRule"
+            | "Procedure"
+            | "InverseAttribute"
+            | "Schema"
+            | "Variable"
+            | "Type"
+            | "Rule"
+            | "UniqueRule"
+            | "SubtypeConstraint"
+            | "WhereRule"
+            | "Aggregate"
+            | "EnumerationItem"
+            | "Generic"
+            | "GenericEntity"
+            | "QueryExpression"
+            | "Alias"
+            | "Repeat"
+    )
+}
+
 /// `create_item_at_parent`: IP-shaped ids redirect to informal
-/// propositions; everything else finds-or-creates a RemarkItem.
+/// propositions; everything else finds-or-creates a RemarkItem on a
+/// remark_items-bearing parent (Ruby: RemarkItem itself does NOT
+/// support nested items, so creation returns nil there).
 fn create_or_find_item(root: &mut Value, parent_ptr: &str, item_id: &str) -> Option<String> {
     if let Some(ip_id) = extract_ip_id(item_id) {
         if let Some(ptr) = create_or_find_informal_proposition(root, parent_ptr, &ip_id) {
@@ -780,6 +965,9 @@ fn create_or_find_item(root: &mut Value, parent_ptr: &str, item_id: &str) -> Opt
     }
     let parent_ptr = parent_ptr.to_string();
     let item_id = item_id.to_string();
+    if !root.pointer(&parent_ptr).is_some_and(supports_remark_items) {
+        return None;
+    }
     let count = root
         .pointer(&format!("{parent_ptr}/remark_items"))
         .and_then(Value::as_array)
@@ -1032,6 +1220,11 @@ pub fn attach_tagged_remarks(root: &mut Value, source: &str) -> Vec<usize> {
     let schema_id_list = schema_ids(root);
     let scope_map = build_scope_map(source);
     let where_index = where_clause_line_index(source);
+    // Ruby's containing_scope_for falls back to the innermost
+    // ScopeContainer whose index span covers the remark line — a remark
+    // after END_SCHEMA can still sit inside the previous construct's
+    // newline-aware span.
+    let position_index = WireIndex::build(root, source);
     let mut attached_spans: Vec<usize> = Vec::new();
 
     for remark in tagged {
@@ -1039,9 +1232,37 @@ pub fn attach_tagged_remarks(root: &mut Value, source: &str) -> Vec<usize> {
             continue;
         }
         let tag = remark.tag.as_deref().unwrap_or_default();
-        let scope_name = containing_scope_name(&scope_map, remark.line);
-        let mut scope_ptr = scope_name.and_then(|name| scope_node_pointer(root, name));
-        // Source-text fallback when the name lookup missed (IP tags on
+        let mut scope_name: Option<String> =
+            containing_scope_name(&scope_map, remark.line).map(String::from);
+        let mut scope_ptr = scope_name
+            .clone()
+            .and_then(|name| scope_node_pointer(root, &name));
+        // Position fallback (Ruby find_by_position): the LAST-listed
+        // covering scope container wins; the scope's name comes from the
+        // node's id, exactly as build_scope_path would read it.
+        if scope_ptr.is_none() {
+            if let Some(entry) = position_index
+                .spanning(remark.line)
+                .into_iter()
+                .rev()
+                .filter(|e| {
+                    matches!(
+                        e.class.as_str(),
+                        "Schema" | "Function" | "Procedure" | "Rule" | "Entity" | "Type"
+                    )
+                })
+                .next()
+            {
+                let id = root
+                    .pointer(&entry.ptr)
+                    .and_then(|n| n.get("id"))
+                    .and_then(Value::as_str)
+                    .map(String::from);
+                scope_ptr = Some(entry.ptr.clone());
+                scope_name = id;
+            }
+        }
+        // Source-text fallback when both lookups missed (IP tags on
         // types/entities declared on a previous line).
         if scope_ptr.is_none() {
             if let Some((_, name)) = find_span_scope_by_source_text(source, remark.line) {
@@ -1086,9 +1307,11 @@ pub fn attach_tagged_remarks(root: &mut Value, source: &str) -> Vec<usize> {
                     matches!(scope_class.as_str(), "Function" | "Procedure" | "Rule");
                 if is_fn_rule_proc {
                     if let Some(scope_ptr) = scope_ptr.as_deref() {
-                        if let Some(schema_id) = scope_owner_schema_id(scope_ptr) {
-                            let scope_path =
-                                format!("{schema_id}.{}", scope_name.unwrap_or_default());
+                        if let Some(schema_id) = scope_owner_schema_id(root, scope_ptr) {
+                            let scope_path = format!(
+                                "{schema_id}.{}",
+                                scope_name.as_deref().unwrap_or_default()
+                            );
                             target = exact_path_pointer(root, &format!("{scope_path}.{tag}"));
                         }
                     }
@@ -1106,7 +1329,7 @@ pub fn attach_tagged_remarks(root: &mut Value, source: &str) -> Vec<usize> {
             // S2: simple tags in the containing scope first.
             if target.is_none() && !tag.contains('.') {
                 if let Some(scope_ptr) = scope_ptr.as_deref() {
-                    target = scope_child_pointer(root, scope_ptr, tag);
+                    target = find_node_in_scope_pointer(root, scope_ptr, tag);
                     if target.is_none() {
                         target =
                             where_clause_target(root, scope_ptr, tag, remark.line, &where_index);
@@ -1148,9 +1371,11 @@ pub fn attach_tagged_remarks(root: &mut Value, source: &str) -> Vec<usize> {
                     matches!(scope_class.as_str(), "Function" | "Procedure" | "Rule");
                 if is_fn_rule_proc {
                     if let Some(scope_ptr) = scope_ptr.as_deref() {
-                        if let Some(schema_id) = scope_owner_schema_id(scope_ptr) {
-                            let scope_path =
-                                format!("{schema_id}.{}", scope_name.unwrap_or_default());
+                        if let Some(schema_id) = scope_owner_schema_id(root, scope_ptr) {
+                            let scope_path = format!(
+                                "{schema_id}.{}",
+                                scope_name.as_deref().unwrap_or_default()
+                            );
                             target = create_implicit_remark_item(
                                 root,
                                 &format!("{scope_path}.{tag}"),
@@ -1172,7 +1397,7 @@ pub fn attach_tagged_remarks(root: &mut Value, source: &str) -> Vec<usize> {
 
         if let Some(target_ptr) = target {
             if let Some(target_node) = root.pointer_mut(&target_ptr) {
-                if add_remark_to(target_node, &remark.text) {
+                if add_remark_to(target_node, &remark.text, remark.tag.as_deref()) {
                     attached_spans.push(remark.position);
                 }
             }
@@ -1182,28 +1407,112 @@ pub fn attach_tagged_remarks(root: &mut Value, source: &str) -> Vec<usize> {
     attached_spans
 }
 
-/// `find_node_in_scope`: the pointer of the scope child with this id.
-fn scope_child_pointer(root: &Value, scope_ptr: &str, tag: &str) -> Option<String> {
+/// `find_node_in_scope`: registry collections' HasRemarks items whose
+/// id equals the tag exactly (case-sensitive), then the scope's types'
+/// enumeration items, then statements (ALIAS/REPEAT/QUERY ids, plus a
+/// QUERY search inside the statement subtree).
+fn find_node_in_scope_pointer(root: &Value, scope_ptr: &str, tag: &str) -> Option<String> {
     let scope = root.pointer(scope_ptr)?;
     let class = class_suffix(scope)?.to_string();
-    for attr in child_collections(&class) {
+    for attr in collection_registry(&format!("Declarations::{class}"))
+        .iter()
+        .chain(collection_registry(&format!("Statements::{class}")))
+    {
         if let Some(items) = scope.get(*attr).and_then(Value::as_array) {
             for (i, item) in items.iter().enumerate() {
-                if item
-                    .get("id")
-                    .and_then(Value::as_str)
-                    .is_some_and(|v| v.eq_ignore_ascii_case(tag))
+                let item_class = class_suffix(item).unwrap_or("");
+                if supports_remarks(item_class)
+                    && item.get("id").and_then(Value::as_str) == Some(tag)
                 {
                     return Some(format!("{scope_ptr}/{attr}/{i}"));
                 }
             }
         }
     }
+    // Enumeration items of the scope's types (and a TYPE scope's own).
+    let owned_types: Vec<(String, &Value)> = if class == "Type" {
+        vec![(String::new(), scope)]
+    } else {
+        scope
+            .get("types")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .enumerate()
+                    .map(|(i, t)| (format!("/types/{i}"), t))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    for (t_suffix, t) in owned_types {
+        let Some(ut) = t.get("underlying_type").filter(|v| !v.is_null()) else {
+            continue;
+        };
+        if !class_suffix(ut).is_some_and(|c| c == "Enumeration") {
+            continue;
+        }
+        if let Some(enum_items) = ut.get("items").and_then(Value::as_array) {
+            for (j, item) in enum_items.iter().enumerate() {
+                if item.get("id").and_then(Value::as_str) == Some(tag) {
+                    return Some(format!("{scope_ptr}{t_suffix}/underlying_type/items/{j}"));
+                }
+            }
+        }
+    }
+    // Statements: direct ALIAS/REPEAT ids, then QUERY expressions inside.
+    if let Some(stmts) = scope.get("statements").and_then(Value::as_array) {
+        for (i, stmt) in stmts.iter().enumerate() {
+            let stmt_class = class_suffix(stmt).unwrap_or("");
+            if matches!(stmt_class, "Alias" | "Repeat" | "QueryExpression")
+                && stmt.get("id").and_then(Value::as_str) == Some(tag)
+            {
+                return Some(format!("{scope_ptr}/statements/{i}"));
+            }
+            let stmt_ptr = format!("{scope_ptr}/statements/{i}");
+            if let Some(hit) = find_query_in_subtree(root, &stmt_ptr, tag) {
+                return Some(hit);
+            }
+        }
+    }
     None
 }
 
-/// The id of the schema owning a scope pointer ("/schemas/i/...").
-fn scope_owner_schema_id(scope_ptr: &str) -> Option<String> {
+/// `find_query_in_expression`: the QUERY expression with this id inside
+/// a statement subtree.
+fn find_query_in_subtree(root: &Value, ptr: &str, tag: &str) -> Option<String> {
+    let node = root.pointer(ptr)?;
+    if class_suffix(node) == Some("QueryExpression")
+        && node.get("id").and_then(Value::as_str) == Some(tag)
+    {
+        return Some(ptr.to_string());
+    }
+    if let Some(map) = node.as_object() {
+        for (key, value) in map {
+            match value {
+                Value::Array(items) => {
+                    for (i, _item) in items.iter().enumerate() {
+                        if let Some(hit) =
+                            find_query_in_subtree(root, &format!("{ptr}/{key}/{i}"), tag)
+                        {
+                            return Some(hit);
+                        }
+                    }
+                }
+                Value::Object(_) => {
+                    if let Some(hit) = find_query_in_subtree(root, &format!("{ptr}/{key}"), tag) {
+                        return Some(hit);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    None
+}
+
+/// The schema ID owning a scope pointer ("/schemas/i/...") — the schema's
+/// NAME, the form `build_scope_path` prefixes onto tags.
+fn scope_owner_schema_id(root: &Value, scope_ptr: &str) -> Option<String> {
     if !scope_ptr.starts_with("/schemas/") {
         return None;
     }
@@ -1213,7 +1522,12 @@ fn scope_owner_schema_id(scope_ptr: &str) -> Option<String> {
         .next()?
         .parse()
         .ok()?;
-    Some(format!("schemas/{index}"))
+    root.get("schemas")
+        .and_then(Value::as_array)
+        .and_then(|a| a.get(index))
+        .and_then(|s| s.get("id"))
+        .and_then(Value::as_str)
+        .map(String::from)
 }
 
 #[cfg(test)]
@@ -1576,8 +1890,10 @@ impl WireIndex {
                 .min_by_key(|e| e.end_line.unwrap_or(0) - e.line)
         } else {
             let before = self.semantic_ending_before(remark_line);
-            if let Some(last) = before.last() {
-                let max_end = last.end_line.unwrap_or(0);
+            if let Some(max_end) = before.iter().filter_map(|e| e.end_line).max() {
+                // Ruby resolves max-end ties through its sort order, which
+                // is stable (document order) for the small entry lists
+                // fixtures produce; the first-recorded node wins.
                 return before.iter().find(|e| e.end_line == Some(max_end)).copied();
             }
             self.first_semantic()
@@ -1701,6 +2017,50 @@ fn collect(
                     }
                 }
             }
+            // Schema#children: the pseudo-collection Ruby's index walks —
+            // an interface's items and each type's enumeration items are
+            // indexed as the schema's children even though no registry
+            // collection carries them.
+            if class == "Declarations::Schema" {
+                if let Some(Value::Array(interfaces)) = map.get("interfaces") {
+                    for (i, iface) in interfaces.iter().enumerate() {
+                        if let Some(Value::Array(items)) = iface.get("items") {
+                            for (j, item) in items.iter().enumerate() {
+                                collect(
+                                    item,
+                                    &format!("{ptr}/interfaces/{i}/items/{j}"),
+                                    Some(ptr.to_string()),
+                                    Some("children"),
+                                    starts,
+                                    out,
+                                );
+                            }
+                        }
+                    }
+                }
+                if let Some(Value::Array(types)) = map.get("types") {
+                    for (i, t) in types.iter().enumerate() {
+                        let enum_items = t
+                            .get("underlying_type")
+                            .filter(|v| !v.is_null())
+                            .filter(|ut| class_suffix(ut).is_some_and(|c| c == "Enumeration"))
+                            .and_then(|ut| ut.get("items"))
+                            .and_then(Value::as_array);
+                        if let Some(items) = enum_items {
+                            for (j, item) in items.iter().enumerate() {
+                                collect(
+                                    item,
+                                    &format!("{ptr}/types/{i}/underlying_type/items/{j}"),
+                                    Some(ptr.to_string()),
+                                    Some("children"),
+                                    starts,
+                                    out,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
         }
         Value::Array(items) => {
             for (i, item) in items.iter().enumerate() {
@@ -1713,7 +2073,7 @@ fn collect(
 
 /// The per-class collection registry (`collection_attributes`
 /// declarations — the single source of truth the Ruby walkers share).
-fn collection_registry(class: &str) -> &'static [&'static str] {
+pub fn collection_registry(class: &str) -> &'static [&'static str] {
     match class {
         "ExpFile" => &["schemas"],
         "Declarations::Schema" => &[
@@ -2194,7 +2554,8 @@ fn closing_region_target(
         return (None, None, None);
     };
     let map = active_scope_map(lines);
-    let Some(active) = map.get(keyword_line).copied().flatten() else {
+    // The map is 0-indexed by line: entry k holds line k+1.
+    let Some(active) = map.get(keyword_line - 1).copied().flatten() else {
         return (None, None, None);
     };
     if active.0 != owner_class {
@@ -2440,10 +2801,12 @@ fn find_body_comment_target(
         if target.is_some() {
             return (target, placement, region);
         }
+        // Ruby returns `mid if mid` where mid is always an array —
+        // truthy even when empty — so an inline remark whose inline and
+        // mid-keyword targets both fail NEVER reaches the statement
+        // region: it goes straight to the legacy nearest fallback.
         let mid = mid_keyword_inline_target(index, lines, line);
-        if mid.0.is_some() {
-            return mid;
-        }
+        return mid;
     }
     let closing = closing_region_target(root, index, lines, line);
     if closing.0.is_some() {
@@ -2453,8 +2816,10 @@ fn find_body_comment_target(
     else {
         return (None, None, None);
     };
+    // Ruby treats missing region entries as "not in a statement region"
+    // and hands the remark to the legacy nearest fallback instead.
     let Some(region_entries) = region_entries else {
-        return (Some(enclosing.ptr.clone()), None, None);
+        return (None, None, None);
     };
     let following = region_entries
         .iter()
