@@ -1,0 +1,556 @@
+{
+  "Expressir::Model::Declarations::InverseAttribute": [
+    "source_offset",
+    "untagged_remarks",
+    "id",
+    "remarks",
+    "remark_items",
+    "kind",
+    "supertype_attribute",
+    "optional",
+    "type",
+    "expression"
+  ],
+  "Expressir::Model::Cache": [
+    "source_offset",
+    "untagged_remarks",
+    "version",
+    "root_path",
+    "content"
+  ],
+  "Expressir::Model::Declarations::Attribute": [
+    "source_offset",
+    "untagged_remarks",
+    "id",
+    "remarks",
+    "remark_items",
+    "kind",
+    "supertype_attribute",
+    "optional",
+    "type",
+    "expression"
+  ],
+  "Expressir::Model::Declarations::RemarkItem": [
+    "source_offset",
+    "untagged_remarks",
+    "id",
+    "remarks"
+  ],
+  "Expressir::Model::DataTypes::Aggregate": [
+    "source_offset",
+    "untagged_remarks",
+    "id",
+    "remarks",
+    "remark_items",
+    "base_type"
+  ],
+  "Expressir::Model::DataTypes::String": [
+    "source_offset",
+    "untagged_remarks",
+    "width",
+    "fixed"
+  ],
+  "Expressir::Model::Literals::String": [
+    "source_offset",
+    "untagged_remarks",
+    "value",
+    "encoded"
+  ],
+  "Expressir::Model::DataTypes::Array": [
+    "source_offset",
+    "untagged_remarks",
+    "bound1",
+    "bound2",
+    "optional",
+    "unique",
+    "base_type"
+  ],
+  "Expressir::Model::DataTypes::Bag": [
+    "source_offset",
+    "untagged_remarks",
+    "bound1",
+    "bound2",
+    "base_type"
+  ],
+  "Expressir::Model::DataTypes::Set": [
+    "source_offset",
+    "untagged_remarks",
+    "bound1",
+    "bound2",
+    "base_type"
+  ],
+  "Expressir::Model::Literals::Real": [
+    "source_offset",
+    "untagged_remarks",
+    "value"
+  ],
+  "Expressir::Model::DataTypes::Binary": [
+    "source_offset",
+    "untagged_remarks",
+    "width",
+    "fixed"
+  ],
+  "Expressir::Model::Declarations::Entity": [
+    "source_offset",
+    "untagged_remarks",
+    "id",
+    "remarks",
+    "remark_items",
+    "abstract",
+    "supertype_expression",
+    "subtype_of",
+    "attributes",
+    "derived_attributes",
+    "inverse_attributes",
+    "unique_rules",
+    "where_rules",
+    "informal_propositions"
+  ],
+  "Expressir::Model::DataTypes::EnumerationItem": [
+    "source_offset",
+    "untagged_remarks",
+    "id",
+    "remarks",
+    "remark_items"
+  ],
+  "Expressir::Model::DataTypes::Enumeration": [
+    "source_offset",
+    "untagged_remarks",
+    "extensible",
+    "based_on",
+    "items"
+  ],
+  "Expressir::Model::Literals::Logical": [
+    "source_offset",
+    "untagged_remarks",
+    "value"
+  ],
+  "Expressir::Model::DataTypes::Boolean": [
+    "source_offset",
+    "untagged_remarks"
+  ],
+  "Expressir::Model::Declarations::DerivedAttribute": [
+    "source_offset",
+    "untagged_remarks",
+    "id",
+    "remarks",
+    "remark_items",
+    "kind",
+    "supertype_attribute",
+    "optional",
+    "type",
+    "expression"
+  ],
+  "Expressir::Model::Literals::Integer": [
+    "source_offset",
+    "untagged_remarks",
+    "value"
+  ],
+  "Expressir::Model::DataTypes::Generic": [
+    "source_offset",
+    "untagged_remarks",
+    "id",
+    "remarks",
+    "remark_items"
+  ],
+  "Expressir::Model::DataTypes::GenericEntity": [
+    "source_offset",
+    "untagged_remarks",
+    "id",
+    "remarks",
+    "remark_items"
+  ],
+  "Expressir::Model::Literals::Binary": [
+    "source_offset",
+    "untagged_remarks",
+    "value"
+  ],
+  "Expressir::Model::Declarations::Constant": [
+    "source_offset",
+    "untagged_remarks",
+    "id",
+    "remarks",
+    "remark_items",
+    "type",
+    "expression"
+  ],
+  "Expressir::Model::DataTypes::Integer": [
+    "source_offset",
+    "untagged_remarks"
+  ],
+  "Expressir::Model::DataTypes::List": [
+    "source_offset",
+    "untagged_remarks",
+    "bound1",
+    "bound2",
+    "unique",
+    "base_type"
+  ],
+  "Expressir::Model::DataTypes::Logical": [
+    "source_offset",
+    "untagged_remarks"
+  ],
+  "Expressir::Model::DataTypes::Real": [
+    "source_offset",
+    "untagged_remarks",
+    "precision"
+  ],
+  "Expressir::Model::DataTypes::Number": [
+    "source_offset",
+    "untagged_remarks"
+  ],
+  "Expressir::Model::DataTypes::Select": [
+    "source_offset",
+    "untagged_remarks",
+    "extensible",
+    "generic_entity",
+    "based_on",
+    "items"
+  ],
+  "Expressir::Model::References::IndexReference": [
+    "source_offset",
+    "untagged_remarks",
+    "ref",
+    "index1",
+    "index2"
+  ],
+  "Expressir::Model::Declarations::UniqueRule": [
+    "source_offset",
+    "untagged_remarks",
+    "id",
+    "remarks",
+    "remark_items",
+    "attributes"
+  ],
+  "Expressir::Model::References::GroupReference": [
+    "source_offset",
+    "untagged_remarks",
+    "ref",
+    "entity"
+  ],
+  "Expressir::Model::References::AttributeReference": [
+    "source_offset",
+    "untagged_remarks",
+    "ref",
+    "attribute"
+  ],
+  "Expressir::Model::Declarations::WhereRule": [
+    "source_offset",
+    "untagged_remarks",
+    "id",
+    "remarks",
+    "remark_items",
+    "expression"
+  ],
+  "Expressir::Model::Declarations::InformalPropositionRule": [
+    "source_offset",
+    "untagged_remarks",
+    "id",
+    "remarks",
+    "remark_items",
+    "expression"
+  ],
+  "Expressir::Model::Declarations::Function": [
+    "source_offset",
+    "untagged_remarks",
+    "id",
+    "remarks",
+    "remark_items",
+    "parameters",
+    "return_type",
+    "types",
+    "entities",
+    "subtype_constraints",
+    "functions",
+    "procedures",
+    "constants",
+    "variables",
+    "statements"
+  ],
+  "Expressir::Model::Statements::Alias": [
+    "source_offset",
+    "untagged_remarks",
+    "id",
+    "remarks",
+    "remark_items",
+    "expression",
+    "statements"
+  ],
+  "Expressir::Model::Declarations::Parameter": [
+    "source_offset",
+    "untagged_remarks",
+    "id",
+    "remarks",
+    "remark_items",
+    "var",
+    "type"
+  ],
+  "Expressir::Model::Repository": [
+    "source_offset",
+    "untagged_remarks",
+    "files"
+  ],
+  "Expressir::Model::Declarations::SubtypeConstraint": [
+    "source_offset",
+    "untagged_remarks",
+    "id",
+    "remarks",
+    "remark_items",
+    "applies_to",
+    "abstract",
+    "total_over",
+    "supertype_expression"
+  ],
+  "Expressir::Model::References::SimpleReference": [
+    "source_offset",
+    "untagged_remarks",
+    "id",
+    "ref",
+    "base_path"
+  ],
+  "Expressir::Model::Declarations::Procedure": [
+    "source_offset",
+    "untagged_remarks",
+    "id",
+    "remarks",
+    "remark_items",
+    "parameters",
+    "types",
+    "entities",
+    "subtype_constraints",
+    "functions",
+    "procedures",
+    "constants",
+    "variables",
+    "statements"
+  ],
+  "Expressir::Model::Declarations::Variable": [
+    "source_offset",
+    "untagged_remarks",
+    "id",
+    "remarks",
+    "remark_items",
+    "type",
+    "expression"
+  ],
+  "Expressir::Model::Statements::CaseAction": [
+    "source_offset",
+    "untagged_remarks",
+    "labels",
+    "statement"
+  ],
+  "Expressir::Model::Statements::Case": [
+    "source_offset",
+    "untagged_remarks",
+    "expression",
+    "actions",
+    "otherwise_statement"
+  ],
+  "Expressir::Model::Declarations::InterfaceItem": [
+    "source_offset",
+    "untagged_remarks",
+    "ref",
+    "id"
+  ],
+  "Expressir::Model::Declarations::Interface": [
+    "source_offset",
+    "untagged_remarks",
+    "kind",
+    "schema",
+    "items"
+  ],
+  "Expressir::Model::Statements::Assignment": [
+    "source_offset",
+    "untagged_remarks",
+    "ref",
+    "expression"
+  ],
+  "Expressir::Model::Declarations::InterfacedItem": [
+    "source_offset",
+    "untagged_remarks",
+    "id",
+    "remarks",
+    "remark_items",
+    "base_item"
+  ],
+  "Expressir::Model::Declarations::Rule": [
+    "source_offset",
+    "untagged_remarks",
+    "id",
+    "remarks",
+    "remark_items",
+    "applies_to",
+    "types",
+    "entities",
+    "subtype_constraints",
+    "functions",
+    "procedures",
+    "constants",
+    "variables",
+    "statements",
+    "where_rules",
+    "informal_propositions"
+  ],
+  "Expressir::Model::Statements::Null": [
+    "source_offset",
+    "untagged_remarks"
+  ],
+  "Expressir::Model::Declarations::Schema": [
+    "source_offset",
+    "untagged_remarks",
+    "id",
+    "remarks",
+    "remark_items",
+    "file",
+    "version",
+    "interfaces",
+    "constants",
+    "types",
+    "entities",
+    "subtype_constraints",
+    "functions",
+    "rules",
+    "procedures",
+    "header",
+    "selected",
+    "file_basename"
+  ],
+  "Expressir::Model::Statements::If": [
+    "source_offset",
+    "untagged_remarks",
+    "expression",
+    "statements",
+    "else_statements"
+  ],
+  "Expressir::Model::Statements::Escape": [
+    "source_offset",
+    "untagged_remarks"
+  ],
+  "Expressir::Model::Declarations::SchemaVersionItem": [
+    "source_offset",
+    "untagged_remarks",
+    "name",
+    "value"
+  ],
+  "Expressir::Model::Declarations::SchemaVersion": [
+    "source_offset",
+    "untagged_remarks",
+    "value",
+    "items"
+  ],
+  "Expressir::Model::Statements::Compound": [
+    "source_offset",
+    "untagged_remarks",
+    "statements"
+  ],
+  "Expressir::Model::Declarations::Type": [
+    "source_offset",
+    "untagged_remarks",
+    "id",
+    "remarks",
+    "remark_items",
+    "underlying_type",
+    "where_rules",
+    "informal_propositions"
+  ],
+  "Expressir::Model::ExpFile": [
+    "source_offset",
+    "untagged_remarks",
+    "path",
+    "schemas"
+  ],
+  "Expressir::Model::Expressions::AggregateInitializer": [
+    "source_offset",
+    "untagged_remarks",
+    "items"
+  ],
+  "Expressir::Model::Statements::Repeat": [
+    "source_offset",
+    "untagged_remarks",
+    "id",
+    "remarks",
+    "remark_items",
+    "bound1",
+    "bound2",
+    "increment",
+    "while_expression",
+    "until_expression",
+    "statements"
+  ],
+  "Expressir::Model::Expressions::AggregateInitializerItem": [
+    "source_offset",
+    "untagged_remarks",
+    "expression",
+    "repetition"
+  ],
+  "Expressir::Model::Statements::ProcedureCall": [
+    "source_offset",
+    "untagged_remarks",
+    "procedure",
+    "parameters"
+  ],
+  "Expressir::Model::Expressions::BinaryExpression": [
+    "source_offset",
+    "untagged_remarks",
+    "operator",
+    "operand1",
+    "operand2"
+  ],
+  "Expressir::Model::Expressions::EntityConstructor": [
+    "source_offset",
+    "untagged_remarks",
+    "entity",
+    "parameters"
+  ],
+  "Expressir::Model::SupertypeExpressions::OneofSupertypeExpression": [
+    "source_offset",
+    "untagged_remarks",
+    "operands"
+  ],
+  "Expressir::Model::Expressions::FunctionCall": [
+    "source_offset",
+    "untagged_remarks",
+    "function",
+    "parameters"
+  ],
+  "Expressir::Model::Expressions::Interval": [
+    "source_offset",
+    "untagged_remarks",
+    "low",
+    "operator1",
+    "item",
+    "operator2",
+    "high"
+  ],
+  "Expressir::Model::SupertypeExpressions::BinarySupertypeExpression": [
+    "source_offset",
+    "untagged_remarks",
+    "operator",
+    "operand1",
+    "operand2"
+  ],
+  "Expressir::Model::Expressions::QueryExpression": [
+    "source_offset",
+    "untagged_remarks",
+    "id",
+    "remarks",
+    "remark_items",
+    "aggregate_source",
+    "expression"
+  ],
+  "Expressir::Model::Statements::Skip": [
+    "source_offset",
+    "untagged_remarks"
+  ],
+  "Expressir::Model::Expressions::UnaryExpression": [
+    "source_offset",
+    "untagged_remarks",
+    "operator",
+    "operand"
+  ],
+  "Expressir::Model::Statements::Return": [
+    "source_offset",
+    "untagged_remarks",
+    "expression"
+  ]
+}

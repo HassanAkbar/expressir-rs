@@ -10,6 +10,7 @@
 
 pub mod attach;
 pub mod batch;
+pub mod checker;
 pub mod compiled_set;
 pub mod extract;
 pub mod format_len;

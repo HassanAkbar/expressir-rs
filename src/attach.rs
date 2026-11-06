@@ -1245,13 +1245,12 @@ pub fn attach_tagged_remarks(root: &mut Value, source: &str) -> Vec<usize> {
                 .spanning(remark.line)
                 .into_iter()
                 .rev()
-                .filter(|e| {
+                .find(|e| {
                     matches!(
                         e.class.as_str(),
                         "Schema" | "Function" | "Procedure" | "Rule" | "Entity" | "Type"
                     )
                 })
-                .next()
             {
                 let id = root
                     .pointer(&entry.ptr)
