@@ -440,18 +440,37 @@ impl<'a> Ctx<'a> {
     fn new(root: &'a Value) -> Self {
         let mut parent: HashMap<String, String> = HashMap::new();
         let mut schemas: Vec<(String, String)> = Vec::new();
-        let count = root
-            .get("schemas")
-            .and_then(Value::as_array)
-            .map(Vec::len)
-            .unwrap_or(0);
-        for i in 0..count {
-            let ptr = format!("/schemas/{i}");
-            if let Some(node) = root.pointer(&ptr) {
+        // Two wire shapes: a single ExpFile ({schemas: [...]}) or a
+        // repository ({files: [{schemas: [...]}]}) — the Ruby Checker
+        // sees the whole repository, so cross-file interfaces resolve.
+        let mut schema_ptrs: Vec<String> = Vec::new();
+        if let Some(files) = root.get("files").and_then(Value::as_array) {
+            for (i, _file) in files.iter().enumerate() {
+                let count = root
+                    .pointer(&format!("/files/{i}/schemas"))
+                    .and_then(Value::as_array)
+                    .map(Vec::len)
+                    .unwrap_or(0);
+                for j in 0..count {
+                    schema_ptrs.push(format!("/files/{i}/schemas/{j}"));
+                }
+            }
+        } else {
+            let count = root
+                .get("schemas")
+                .and_then(Value::as_array)
+                .map(Vec::len)
+                .unwrap_or(0);
+            for i in 0..count {
+                schema_ptrs.push(format!("/schemas/{i}"));
+            }
+        }
+        for ptr in &schema_ptrs {
+            if let Some(node) = root.pointer(ptr) {
                 parent.insert(ptr.clone(), String::new());
-                index_parents(node, &ptr, &mut parent);
+                index_parents(node, ptr, &mut parent);
                 let id = id_of(node).unwrap_or_default().to_string();
-                schemas.push((ptr, id));
+                schemas.push((ptr.clone(), id));
             }
         }
         let mut by_name: HashMap<String, Vec<usize>> = HashMap::new();
