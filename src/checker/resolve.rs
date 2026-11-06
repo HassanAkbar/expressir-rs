@@ -226,16 +226,25 @@ impl<'a> Ctx<'a> {
     /// `#children` list. Schema interface expansions fold to their
     /// foreign base-item pointers (find derefs InterfacedItem at once).
     pub(crate) fn children_by_id(&self, scope_ptr: &str) -> HashMap<String, String> {
-        if let Some(ptr) = scope_ptr.strip_prefix("/schemas/") {
-            if let Ok(i) = ptr.parse::<usize>() {
-                if i < self.schemas.len() {
-                    if let Some(cached) = self.children_cache.get(scope_ptr) {
-                        return cached.clone();
-                    }
-                }
+        if self.schema_index_of_ptr(scope_ptr).is_some() {
+            if let Some(cached) = self.children_cache.get(scope_ptr) {
+                return cached.clone();
             }
         }
         self.build_children_by_id(scope_ptr)
+    }
+
+    /// The schema index for `/schemas/N` and `/files/I/schemas/J`
+    /// pointers.
+    pub(crate) fn schema_index_of_ptr(&self, ptr: &str) -> Option<usize> {
+        let rest = ptr.strip_prefix("/schemas/").or_else(|| {
+            ptr.strip_prefix("/files/")
+                .and_then(|rest| rest.split_once("/schemas/"))
+                .map(|(_, rest)| rest)
+        })?;
+        rest.parse::<usize>()
+            .ok()
+            .filter(|&i| i < self.schemas.len())
     }
 
     fn schema_children_by_id(&mut self, schema: usize) -> HashMap<String, String> {
@@ -335,10 +344,7 @@ impl<'a> Ctx<'a> {
                 }
             }
             "Schema" => {
-                let idx = scope_ptr
-                    .strip_prefix("/schemas/")
-                    .and_then(|rest| rest.parse::<usize>().ok());
-                if let Some(idx) = idx {
+                if let Some(idx) = self.schema_index_of_ptr(scope_ptr) {
                     let map = self.schema_children_by_id_inner(idx);
                     for (k, v) in map {
                         out.insert(k, v);
