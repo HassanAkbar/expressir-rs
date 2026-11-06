@@ -224,3 +224,26 @@ fn checker_matches_ruby_over_the_corpus() {
 fn checker_matches_ruby_over_the_corpus_dialect_1994() {
     run_parity(Some("1994"));
 }
+
+#[cfg(test)]
+mod find_repro {
+    use serde_json::Value;
+
+    #[test]
+    fn interface_schema_ref_resolves_at_root() {
+        let Ok(text) = std::fs::read_to_string("/tmp/lsp_wire.json") else {
+            return;
+        };
+        let wire: Value = serde_json::from_str(&text).unwrap();
+        let ctx = expressir_rs::checker::Ctx::new(&wire);
+        let hit = ctx.find("/files/1/schemas/0/interfaces/0/schema", "alpha");
+        println!("find => {hit:?}");
+        let by_root = ctx.children_by_id("");
+        println!(
+            "root children has alpha: {} (n={})",
+            by_root.contains_key("alpha"),
+            by_root.len()
+        );
+        assert!(hit.is_some(), "alpha should resolve at the root scope");
+    }
+}

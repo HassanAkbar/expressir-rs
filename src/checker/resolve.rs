@@ -78,7 +78,8 @@ impl<'a> Ctx<'a> {
 
     /// Ruby `ModelElement#find`: fold the path, then walk scopes from
     /// `from_ptr` upward until the parts resolve.
-    pub(crate) fn find(&self, from_ptr: &str, path: &str) -> Option<String> {
+    #[doc(hidden)]
+    pub fn find(&self, from_ptr: &str, path: &str) -> Option<String> {
         if path.is_empty() {
             return Some(from_ptr.to_string());
         }
@@ -225,7 +226,8 @@ impl<'a> Ctx<'a> {
     /// Ruby `children_by_id` (LAST id wins) over the class-specific
     /// `#children` list. Schema interface expansions fold to their
     /// foreign base-item pointers (find derefs InterfacedItem at once).
-    pub(crate) fn children_by_id(&self, scope_ptr: &str) -> HashMap<String, String> {
+    #[doc(hidden)]
+    pub fn children_by_id(&self, scope_ptr: &str) -> HashMap<String, String> {
         if self.schema_index_of_ptr(scope_ptr).is_some() {
             if let Some(cached) = self.children_cache.get(scope_ptr) {
                 return cached.clone();
@@ -322,8 +324,8 @@ impl<'a> Ctx<'a> {
     fn build_children_by_id(&self, scope_ptr: &str) -> HashMap<String, String> {
         let mut out: HashMap<String, String> = HashMap::new();
         if scope_ptr.is_empty() {
-            for (i, (_, id)) in self.schemas.iter().enumerate() {
-                out.insert(safe_downcase(id), format!("/schemas/{i}"));
+            for (ptr, id) in self.schemas.iter() {
+                out.insert(safe_downcase(id), ptr.clone());
             }
             return out;
         }
@@ -339,8 +341,8 @@ impl<'a> Ctx<'a> {
         };
         match tail {
             "ExpFile" | "Repository" => {
-                for (i, (_, id)) in self.schemas.iter().enumerate() {
-                    out.insert(safe_downcase(id), format!("/schemas/{i}"));
+                for (ptr, id) in self.schemas.iter() {
+                    out.insert(safe_downcase(id), ptr.clone());
                 }
             }
             "Schema" => {

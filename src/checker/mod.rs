@@ -368,7 +368,7 @@ pub fn debug_fills(root: &Value, name: &str) -> Vec<(String, Option<String>)> {
     out
 }
 
-pub(crate) struct Ctx<'a> {
+pub struct Ctx<'a> {
     pub root: &'a Value,
     pub parent: HashMap<String, String>,
     pub schemas: Vec<(String, String)>,
@@ -437,7 +437,8 @@ fn index_parents(node: &Value, ptr: &str, parent: &mut HashMap<String, String>) 
 }
 
 impl<'a> Ctx<'a> {
-    fn new(root: &'a Value) -> Self {
+    #[doc(hidden)]
+    pub fn new(root: &'a Value) -> Self {
         let mut parent: HashMap<String, String> = HashMap::new();
         let mut schemas: Vec<(String, String)> = Vec::new();
         // Two wire shapes: a single ExpFile ({schemas: [...]}) or a
