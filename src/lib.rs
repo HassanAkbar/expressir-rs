@@ -14,6 +14,7 @@ pub mod checker;
 pub mod compiled_set;
 pub mod extract;
 pub mod format_len;
+pub mod formatter;
 pub mod model;
 pub mod model_json;
 pub mod p21;
