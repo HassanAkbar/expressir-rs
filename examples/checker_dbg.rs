@@ -1,9 +1,13 @@
 //! Dump a wire pointer or run checker fills.
 fn main() {
     let path = std::env::args().nth(1).expect("file");
-    let source = std::fs::read_to_string(&path).unwrap();
-    let tree = expressir_rs::ParsedTree::parse(&source).unwrap();
-    let wire = tree.to_model_json(&path).unwrap();
+    let wire = if let Ok(wire_path) = std::env::var("CHECKER_WIRE") {
+        serde_json::from_str(&std::fs::read_to_string(&wire_path).unwrap()).unwrap()
+    } else {
+        let source = std::fs::read_to_string(&path).unwrap();
+        let tree = expressir_rs::ParsedTree::parse(&source).unwrap();
+        tree.to_model_json(&path).unwrap()
+    };
     if let Ok(spec) = std::env::var("CHECKER_DUMP_EXPANSION") {
         let (idx, k) = spec.split_once(':').unwrap();
         let out =
@@ -38,7 +42,12 @@ fn main() {
     }
     if let Ok(dialect) = std::env::var("CHECKER_DIALECT") {
         let mut w2 = wire.clone();
-        let notes = expressir_rs::checker::check(&mut w2, Some(&dialect));
+        let d = if dialect == "none" {
+            None
+        } else {
+            Some(dialect.as_str())
+        };
+        let notes = expressir_rs::checker::check(&mut w2, d);
         for n in &notes {
             println!("[{}] {}: {}", n.severity, n.id, n.message);
         }

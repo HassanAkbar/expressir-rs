@@ -1423,9 +1423,11 @@ impl<'a> Ctx<'a> {
             let eptr = format!("{base}/entities/{j}");
             for (k, attr) in arr(entity, "attributes").iter().enumerate() {
                 // Ruby: attr.is_a?(Attribute) && !attr.is_a?(InverseAttribute)
-                // — DerivedAttribute subclasses Attribute.
-                if !cls(attr).ends_with("Declarations::Attribute")
-                    || cls(attr).ends_with("Declarations::InverseAttribute")
+                // — DerivedAttribute subclasses Attribute (an explicit
+                // class match: string suffixes cannot express that).
+                let attr_class = cls(attr);
+                if attr_class != "Expressir::Model::Declarations::Attribute"
+                    && attr_class != "Expressir::Model::Declarations::DerivedAttribute"
                 {
                     continue;
                 }
