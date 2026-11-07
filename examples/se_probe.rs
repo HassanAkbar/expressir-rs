@@ -22,10 +22,7 @@ fn main() {
                     se.as_object()
                         .map(|m| m.keys().cloned().collect::<Vec<_>>())
                 );
-                println!(
-                    "  se json: {}",
-                    serde_json::to_string(se).unwrap()[..200].to_string()
-                );
+                println!("  se json: {}", &serde_json::to_string(se).unwrap()[..200]);
                 return true;
             }
             for (k, v) in o {
