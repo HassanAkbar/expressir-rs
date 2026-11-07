@@ -206,3 +206,44 @@ fn factor_keeps_the_exponentiation_operand() {
     assert_eq!(expr["operand1"]["value"], "4");
     assert_eq!(expr["operand2"]["value"], "2");
 }
+
+#[test]
+fn bare_in_rhs_parses() {
+    // 2.4.56 regression (expressir#598): `s IN t` — a bare identifier as
+    // the IN right-hand side — failed at the whitespace after IN, while
+    // 2.4.48 parsed it as a normal IN relation.
+    let src = "SCHEMA explicit_constraint_schema;\n\
+ENTITY e;\n\
+WHERE\n\
+  wr1: s IN t;\n\
+END_ENTITY;\n\
+END_SCHEMA;\n";
+    let v = wire(src);
+    let wr = &schema(&v)["entities"][0]["where_rules"][0];
+    let expr = &wr["expression"];
+    assert_eq!(
+        expr["_class"],
+        "Expressir::Model::Expressions::BinaryExpression"
+    );
+    assert_eq!(expr["operator"], "IN");
+}
+
+#[test]
+fn paren_in_rhs_stays_an_in_relation() {
+    // Same regression, parenthesised form: 2.4.56 parsed `s IN (t)` as a
+    // call instead of an IN relation.
+    let src = "SCHEMA s2;\n\
+ENTITY e;\n\
+WHERE\n\
+  wr1: s IN (t);\n\
+END_ENTITY;\n\
+END_SCHEMA;\n";
+    let v = wire(src);
+    let wr = &schema(&v)["entities"][0]["where_rules"][0];
+    let expr = &wr["expression"];
+    assert_eq!(
+        expr["_class"],
+        "Expressir::Model::Expressions::BinaryExpression"
+    );
+    assert_eq!(expr["operator"], "IN");
+}
