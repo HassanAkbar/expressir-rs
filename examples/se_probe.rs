@@ -37,11 +37,10 @@ fn main() {
                             }
                         }
                     }
-                    serde_json::Value::Object(_) => {
-                        if walk(v, &format!("{path}/{k}")) {
-                            return true;
-                        }
+                    serde_json::Value::Object(_) if walk(v, &format!("{path}/{k}")) => {
+                        return true;
                     }
+                    serde_json::Value::Object(_) => {}
                     _ => {}
                 }
             }
