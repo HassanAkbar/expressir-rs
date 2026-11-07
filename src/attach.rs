@@ -1209,9 +1209,11 @@ fn create_implicit_remark_item_at_schema(
 }
 
 /// The tagged-remark strategy chain (`attach_tagged_remarks`) over the
-/// wire. Returns the byte spans that attached.
-pub fn attach_tagged_remarks(root: &mut Value, source: &str) -> Vec<usize> {
-    let remarks = crate::remark::scan(source);
+/// wire. With `annotations`, EXPRESSdoc annotations participate like
+/// remarks (metanorma/annotated-express#94). Returns the byte spans
+/// that attached.
+pub fn attach_tagged_remarks(root: &mut Value, source: &str, annotations: bool) -> Vec<usize> {
+    let remarks = crate::remark::scan_with(source, annotations);
     let tagged: Vec<_> = remarks.iter().filter(|r| r.tag.is_some()).collect();
     if tagged.is_empty() {
         return Vec::new();
@@ -1539,7 +1541,7 @@ mod tagged_chain_tests {
             .expect("parses")
             .to_model_json("demo.exp")
             .expect("wire");
-        attach_tagged_remarks(&mut wire, source);
+        attach_tagged_remarks(&mut wire, source, false);
         wire
     }
 
@@ -2719,8 +2721,8 @@ fn mid_keyword_inline_target(
 
 /// `attach_untagged_remarks`: end-of-scope lines, body comments, then
 /// the nearest-node fallback.
-pub fn attach_untagged_remarks(root: &mut Value, source: &str) -> Vec<usize> {
-    let remarks = crate::remark::scan(source);
+pub fn attach_untagged_remarks(root: &mut Value, source: &str, annotations: bool) -> Vec<usize> {
+    let remarks = crate::remark::scan_with(source, annotations);
     let untagged: Vec<_> = remarks.iter().filter(|r| r.tag.is_none()).collect();
     if untagged.is_empty() {
         return Vec::new();
@@ -2856,7 +2858,7 @@ mod untagged_tests {
             .expect("parses")
             .to_model_json("demo.exp")
             .expect("wire");
-        attach_untagged_remarks(&mut wire, source);
+        attach_untagged_remarks(&mut wire, source, false);
         wire
     }
 

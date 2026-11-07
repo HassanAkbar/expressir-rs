@@ -315,8 +315,8 @@ fn attachment_matches_ruby_over_the_corpus() {
             Err(_) => continue,
         };
         let mut attached = wire.clone();
-        expressir_rs::attach::attach_tagged_remarks(&mut attached, &source);
-        expressir_rs::attach::attach_untagged_remarks(&mut attached, &source);
+        expressir_rs::attach::attach_tagged_remarks(&mut attached, &source, false);
+        expressir_rs::attach::attach_untagged_remarks(&mut attached, &source, false);
         wires.insert(key.clone(), wire);
         rust_attached.insert(key, rust_summary(&attached));
     }

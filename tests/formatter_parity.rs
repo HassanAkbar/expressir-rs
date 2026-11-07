@@ -142,8 +142,8 @@ fn formatter_matches_ruby_over_the_corpus() {
             Err(_) => continue,
         };
         let mut attached = wire.clone();
-        expressir_rs::attach::attach_tagged_remarks(&mut attached, &source);
-        expressir_rs::attach::attach_untagged_remarks(&mut attached, &source);
+        expressir_rs::attach::attach_tagged_remarks(&mut attached, &source, false);
+        expressir_rs::attach::attach_untagged_remarks(&mut attached, &source, false);
         let text = expressir_rs::formatter::format(&attached, false);
         let no_remarks = expressir_rs::formatter::format(&attached, true);
         rust.insert(key.clone(), (text, no_remarks));

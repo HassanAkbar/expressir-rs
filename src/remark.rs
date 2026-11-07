@@ -18,9 +18,20 @@ pub const FORMAT_TAIL: &str = "tail";
 /// Embedded remark (`(* ... *)`).
 pub const FORMAT_EMBEDDED: &str = "embedded";
 
+/// Tail annotation (`--- ...`), the EXPRESSdoc display channel
+/// (metanorma/annotated-express#94). Recognized only in annotations
+/// mode, and only for exactly three dashes not followed by a fourth —
+/// dash runs stay remarks.
+pub const FORMAT_TAIL_ANNOTATION: &str = "tail_annotation";
+
+/// Embedded annotation (`(** ... *)`), annotations mode only.
+pub const FORMAT_EMBEDDED_ANNOTATION: &str = "embedded_annotation";
+
 const TAIL_MARKER: &[u8] = b"--";
 const EMBEDDED_OPEN: &[u8] = b"(*";
 const EMBEDDED_CLOSE: &[u8] = b"*)";
+const TAIL_ANNOTATION_MARKER: &[u8] = b"---";
+const EMBEDDED_ANNOTATION_OPEN: &[u8] = b"(**";
 const STRING_QUOTE: u8 = b'\'';
 const RPAREN_BYTE: u8 = b')';
 
@@ -47,6 +58,19 @@ impl RemarkUnit {
 
     pub fn embedded(&self) -> bool {
         self.format == FORMAT_EMBEDDED
+    }
+
+    /// Tail placement semantics — annotations sit where tails sit.
+    pub fn tail_like(&self) -> bool {
+        self.format == FORMAT_TAIL || self.format == FORMAT_TAIL_ANNOTATION
+    }
+
+    pub fn tail_annotation(&self) -> bool {
+        self.format == FORMAT_TAIL_ANNOTATION
+    }
+
+    pub fn embedded_annotation(&self) -> bool {
+        self.format == FORMAT_EMBEDDED_ANNOTATION
     }
 
     /// Byte length of the full remark (opener + content + closer).
@@ -218,6 +242,27 @@ fn empty_overlap_remark(src: &[u8], pos: usize) -> bool {
 /// position). Unclosed remarks and strings terminate the scan
 /// gracefully — malformed input never raises.
 pub fn scan(source: &str) -> Vec<RemarkUnit> {
+    scan_with(source, false)
+}
+
+/// True when bytes at `pos` open a `---` tail annotation: exactly
+/// three dashes, the fourth byte (if any) not a dash — dash runs of
+/// four or more stay tail remarks.
+fn tail_annotation_at(src: &[u8], pos: usize) -> bool {
+    src[pos..].starts_with(TAIL_ANNOTATION_MARKER)
+        && src.get(pos + TAIL_ANNOTATION_MARKER.len()) != Some(&b'-')
+}
+
+/// True when bytes at `pos` open a `(**` embedded annotation.
+fn embedded_annotation_at(src: &[u8], pos: usize) -> bool {
+    src[pos..].starts_with(EMBEDDED_ANNOTATION_OPEN)
+}
+
+/// Extracts every remark (and, in annotations mode, every EXPRESSdoc
+/// annotation — metanorma/annotated-express#94) from `source`, in
+/// source order (by byte position). Unclosed remarks and strings
+/// terminate the scan gracefully — malformed input never raises.
+pub fn scan_with(source: &str, annotations: bool) -> Vec<RemarkUnit> {
     let src = source.as_bytes();
     let line_map = LineMap::new(src);
     let mut remarks = Vec::new();
@@ -235,8 +280,10 @@ pub fn scan(source: &str) -> Vec<RemarkUnit> {
     let mut embedded_depth = 0usize;
     let mut tail_start = 0usize;
     let mut tail_line = 1usize;
+    let mut tail_ann = false;
     let mut embedded_start = 0usize;
     let mut embedded_line = 1usize;
+    let mut embedded_ann = false;
     let mut embed = Cursor::new(src, EMBEDDED_OPEN);
     let mut close = Cursor::new(src, EMBEDDED_CLOSE);
     let mut tail = Cursor::new(src, TAIL_MARKER);
@@ -247,12 +294,19 @@ pub fn scan(source: &str) -> Vec<RemarkUnit> {
         match state {
             State::InTail => match newline.at_or_after(pos) {
                 Some(nl) => {
-                    emit_tail(&mut remarks, src, tail_start, nl, tail_line);
+                    emit_tail(&mut remarks, src, tail_start, nl, tail_line, tail_ann);
                     pos = nl + 1;
                     state = State::Top;
                 }
                 None => {
-                    emit_tail(&mut remarks, src, tail_start, src.len(), tail_line);
+                    emit_tail(
+                        &mut remarks,
+                        src,
+                        tail_start,
+                        src.len(),
+                        tail_line,
+                        tail_ann,
+                    );
                     return remarks;
                 }
             },
@@ -277,7 +331,14 @@ pub fn scan(source: &str) -> Vec<RemarkUnit> {
                         embedded_depth -= 1;
                         pos = c + EMBEDDED_CLOSE.len();
                         if embedded_depth == 0 {
-                            emit_embedded(&mut remarks, src, embedded_start, c, embedded_line);
+                            emit_embedded(
+                                &mut remarks,
+                                src,
+                                embedded_start,
+                                c,
+                                embedded_line,
+                                embedded_ann,
+                            );
                             state = State::Top;
                         }
                     }
@@ -324,18 +385,32 @@ pub fn scan(source: &str) -> Vec<RemarkUnit> {
                             n + EMBEDDED_OPEN.len(),
                             n + EMBEDDED_OPEN.len(),
                             line_map.line_number(n),
+                            false,
                         );
                         pos = n + 3;
                     } else {
-                        embedded_start = n + EMBEDDED_OPEN.len();
+                        // `(**` opens an annotation when annotations mode
+                        // is on; the byte after `(*` is a `*`, so the
+                        // `(*)` overlap can never collide with it.
+                        embedded_ann = annotations && embedded_annotation_at(src, n);
+                        embedded_start = n + if embedded_ann {
+                            EMBEDDED_ANNOTATION_OPEN.len()
+                        } else {
+                            EMBEDDED_OPEN.len()
+                        };
                         embedded_line = line_map.line_number(n);
                         embedded_depth = 1;
                         state = State::InEmbedded;
-                        pos = n + EMBEDDED_OPEN.len();
+                        pos = embedded_start;
                     }
                 } else {
                     let t = next_tail.unwrap();
-                    tail_start = t + TAIL_MARKER.len();
+                    tail_ann = annotations && tail_annotation_at(src, t);
+                    tail_start = t + if tail_ann {
+                        TAIL_ANNOTATION_MARKER.len()
+                    } else {
+                        TAIL_MARKER.len()
+                    };
                     tail_line = line_map.line_number(t);
                     state = State::InTail;
                     pos = tail_start;
@@ -353,16 +428,26 @@ fn emit_tail(
     content_start: usize,
     content_end: usize,
     line: usize,
+    annotation: bool,
 ) {
     let raw = &src[content_start..content_end];
     let (tag, content) = parse_tail(ruby_strip(raw));
     remarks.push(RemarkUnit {
-        position: content_start - TAIL_MARKER.len(),
+        position: content_start
+            - if annotation {
+                TAIL_ANNOTATION_MARKER.len()
+            } else {
+                TAIL_MARKER.len()
+            },
         end_position: content_end,
         line,
         text: content,
         tag,
-        format: FORMAT_TAIL,
+        format: if annotation {
+            FORMAT_TAIL_ANNOTATION
+        } else {
+            FORMAT_TAIL
+        },
     });
 }
 
@@ -372,16 +457,26 @@ fn emit_embedded(
     content_start: usize,
     content_end: usize,
     line: usize,
+    annotation: bool,
 ) {
     let raw = &src[content_start..content_end];
     let (tag, content) = parse_embedded(raw);
     remarks.push(RemarkUnit {
-        position: content_start - EMBEDDED_OPEN.len(),
+        position: content_start
+            - if annotation {
+                EMBEDDED_ANNOTATION_OPEN.len()
+            } else {
+                EMBEDDED_OPEN.len()
+            },
         end_position: content_end + EMBEDDED_CLOSE.len(),
         line,
         text: content,
         tag,
-        format: FORMAT_EMBEDDED,
+        format: if annotation {
+            FORMAT_EMBEDDED_ANNOTATION
+        } else {
+            FORMAT_EMBEDDED
+        },
     });
 }
 
@@ -391,6 +486,83 @@ mod tests {
 
     fn scan(source: &str) -> Vec<RemarkUnit> {
         crate::remark::scan(source)
+    }
+
+    fn scan_ann(source: &str) -> Vec<RemarkUnit> {
+        crate::remark::scan_with(source, true)
+    }
+
+    #[test]
+    fn annotations_off_by_default_keeps_dash_runs_as_remarks() {
+        let source = "--- a three dash remark\n-- a plain remark\n---- four dashes\n(** looks like a remark opener *)\n";
+        let units = scan(source);
+        assert_eq!(units.len(), 4);
+        assert!(units
+            .iter()
+            .all(|u| u.format == FORMAT_TAIL || u.format == FORMAT_EMBEDDED));
+    }
+
+    #[test]
+    fn annotations_mode_classifies_the_expressdoc_forms() {
+        let source = concat!(
+            "SCHEMA demo; --- schema annotation\n",
+            "  (**\"demo.note\" embedded annotation *)\n",
+            "  --- tail annotation\n",
+            "  ---- four dash divider stays a remark\n",
+            "  (* a plain remark *)\n",
+            "END_SCHEMA;\n",
+        );
+        let units = scan_ann(source);
+        let formats: Vec<&str> = units.iter().map(|u| u.format).collect();
+        assert_eq!(
+            formats,
+            vec![
+                FORMAT_TAIL_ANNOTATION,
+                FORMAT_EMBEDDED_ANNOTATION,
+                FORMAT_TAIL_ANNOTATION,
+                FORMAT_TAIL,
+                FORMAT_EMBEDDED,
+            ]
+        );
+        let schema_ann = &units[0];
+        assert_eq!(schema_ann.text, "schema annotation");
+        let embedded_ann = &units[1];
+        assert_eq!(embedded_ann.tag.as_deref(), Some("demo.note"));
+        assert_eq!(embedded_ann.text, "embedded annotation");
+    }
+
+    #[test]
+    fn annotation_positions_cover_their_markers() {
+        let source = "SCHEMA s;\nEND_SCHEMA;\n--- note\n";
+        let marker_at = source.find("---").expect("marker present");
+        let units = scan_ann(source);
+        assert_eq!(units.len(), 1);
+        assert_eq!(units[0].position, marker_at);
+        assert_eq!(&source[units[0].position..units[0].position + 3], "---");
+    }
+
+    #[test]
+    fn plain_markers_inside_annotations_nest_like_remarks() {
+        // An embedded remark opener inside an annotation opens a nested
+        // remark; the annotation closes on its own `*)`.
+        let source = "SCHEMA s;\n  (** outer (** inner *) still annotation *)\nEND_SCHEMA;\n";
+        let units = scan_ann(source);
+        assert_eq!(units.len(), 1);
+        assert_eq!(units[0].format, FORMAT_EMBEDDED_ANNOTATION);
+        assert!(units[0].text.contains("inner"));
+    }
+
+    #[test]
+    fn annotation_opener_takes_priority_over_the_plain_marker() {
+        // `(**` is `(*` plus a star: the annotation wins at the same
+        // position, and the following plain remark is a separate unit.
+        let source = "(** ann *) (* plain *)\n";
+        let units = scan_ann(source);
+        assert_eq!(units.len(), 2);
+        assert_eq!(units[0].format, FORMAT_EMBEDDED_ANNOTATION);
+        assert_eq!(units[0].text, "ann");
+        assert_eq!(units[1].format, FORMAT_EMBEDDED);
+        assert_eq!(units[1].text, "plain");
     }
 
     #[test]

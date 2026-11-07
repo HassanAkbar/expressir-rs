@@ -3,8 +3,8 @@ fn main() {
     let source = std::fs::read_to_string(&path).unwrap();
     let tree = expressir_rs::ParsedTree::parse(&source).unwrap();
     let mut wire = tree.to_model_json(&path).unwrap();
-    expressir_rs::attach::attach_tagged_remarks(&mut wire, &source);
-    expressir_rs::attach::attach_untagged_remarks(&mut wire, &source);
+    expressir_rs::attach::attach_tagged_remarks(&mut wire, &source, false);
+    expressir_rs::attach::attach_untagged_remarks(&mut wire, &source, false);
     fn walk(n: &serde_json::Value, path: &str) {
         if let Some(o) = n.as_object() {
             if o.get("_class")

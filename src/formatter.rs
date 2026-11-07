@@ -233,6 +233,19 @@ impl<'a> Remark<'a> {
         self.format == Some("tail")
     }
 
+    fn tail_annotation(&self) -> bool {
+        self.format == Some("tail_annotation")
+    }
+
+    fn embedded_annotation(&self) -> bool {
+        self.format == Some("embedded_annotation")
+    }
+
+    /// Tail placement semantics — annotations sit where tails sit.
+    fn tail_like(&self) -> bool {
+        self.tail() || self.tail_annotation()
+    }
+
     fn inline(&self) -> bool {
         self.placement == Some("inline")
     }
@@ -1341,8 +1354,14 @@ impl<'a> Formatter<'a> {
         } else {
             text.to_string()
         };
-        if remark.tail() {
+        if remark.tail_annotation() {
+            format!("--- {formatted}")
+        } else if remark.tail() {
             format!("-- {formatted}")
+        } else if remark.embedded_annotation() && text.contains('\n') {
+            format!("(**\n{formatted}\n*)")
+        } else if remark.embedded_annotation() {
+            format!("(** {formatted} *)")
         } else if text.contains('\n') {
             format!("(*\n{formatted}\n*)")
         } else {
@@ -1366,8 +1385,12 @@ impl<'a> Formatter<'a> {
         } else {
             text.to_string()
         };
-        if remark.tail() {
+        if remark.tail_annotation() {
+            format!(" --- {formatted}")
+        } else if remark.tail() {
             format!(" -- {formatted}")
+        } else if remark.embedded_annotation() {
+            format!(" (** {formatted} *)")
         } else {
             format!(" (* {formatted} *)")
         }
@@ -1387,7 +1410,7 @@ impl<'a> Formatter<'a> {
         let Some(text) = remark.text.filter(|t| !t.is_empty()) else {
             return String::new();
         };
-        if !remark.tail() {
+        if !remark.tail_like() {
             return String::new();
         }
         let formatted = if remark.tagged() {
@@ -1395,7 +1418,11 @@ impl<'a> Formatter<'a> {
         } else {
             text.to_string()
         };
-        format!(" -- {formatted}")
+        if remark.tail_annotation() {
+            format!(" --- {formatted}")
+        } else {
+            format!(" -- {formatted}")
+        }
     }
 
     fn format_preamble_remarks(&self, ptr: &str, indent_str: &str) -> Option<String> {
@@ -1415,7 +1442,7 @@ impl<'a> Formatter<'a> {
             tail(node),
             "Schema" | "Entity" | "Type" | "Function" | "Procedure" | "Rule"
         );
-        if is_scope_container && remarks.last().unwrap().tail() {
+        if is_scope_container && remarks.last().unwrap().tail_like() {
             remarks.pop();
         }
         if remarks.is_empty() {
@@ -1437,8 +1464,18 @@ impl<'a> Formatter<'a> {
         } else {
             text.to_string()
         };
-        if remark.tail() {
+        if remark.tail_annotation() {
+            format!("{indent_str}--- {text}")
+        } else if remark.tail() {
             format!("{indent_str}-- {text}")
+        } else if remark.embedded_annotation() && text.contains('\n') {
+            let lines: Vec<String> = text
+                .split('\n')
+                .map(|line| format!("{indent_str}  {}", line.trim()))
+                .collect();
+            format!("{indent_str}(**\n{}\n{indent_str}**)", lines.join("\n"))
+        } else if remark.embedded_annotation() {
+            format!("{indent_str}(** {text} *)")
         } else if text.contains('\n') {
             let lines: Vec<String> = text
                 .split('\n')
