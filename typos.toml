@@ -28,3 +28,8 @@ serde = "serde"
 # Intentional: fixture comment data and the smrl-fullset artifact name
 eleemnts = "eleemnts"
 fullset = "fullset"
+
+# EXPRESSdoc (the WG12 display format, expressir#91): typos segments
+# the CamelCase compound into "EXPRES".
+[default.extend-identifiers]
+EXPRESSdoc = "EXPRESSdoc"
