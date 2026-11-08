@@ -2440,6 +2440,19 @@ fn closing_keyword_after(
     let mut probe = line + 1;
     while probe <= lines.len() {
         let content = lines[probe - 1].trim();
+        // Embedded remark blocks (`(*"tag" ... *)`) that the renderer
+        // emits between a trailing comment and the closing keyword: skip
+        // the whole block, the keyword lies beyond it (expressir#609).
+        if content.starts_with("(*") {
+            if !content.contains("*)") {
+                probe += 1;
+                while probe <= lines.len() && !lines[probe - 1].contains("*)") {
+                    probe += 1;
+                }
+            }
+            probe += 1;
+            continue;
+        }
         if !(content.is_empty() || content.starts_with("--")) {
             break;
         }
@@ -2768,6 +2781,7 @@ pub fn attach_untagged_remarks(root: &mut Value, source: &str, annotations: bool
     }
     let lines: Vec<&str> = source.lines().collect();
     let index = WireIndex::build(root, source);
+    let scope_map = build_scope_map(source);
     let mut attached: Vec<usize> = Vec::new();
 
     for remark in untagged {
@@ -2793,9 +2807,34 @@ pub fn attach_untagged_remarks(root: &mut Value, source: &str, annotations: bool
                     .contains(&kw.to_ascii_lowercase())
             })
         {
+            let expected_class = [
+                ("end_schema", "Schema"),
+                ("end_entity", "Entity"),
+                ("end_type", "Type"),
+                ("end_function", "Function"),
+                ("end_procedure", "Procedure"),
+                ("end_rule", "Rule"),
+            ]
+            .into_iter()
+            .find(|(kw, _)| line_content.to_ascii_lowercase().contains(kw))
+            .map(|(_, class)| class);
             let matched = index
                 .node_for_end_scope_at(remark.line, line_content)
-                .map(|e| e.ptr.clone());
+                .map(|e| e.ptr.clone())
+                .or_else(|| {
+                    // Scope-walk fallback: spans can miss on the grammar
+                    // lane, where source strings are reconstructions whose
+                    // lengths undershoot the node's real extent. The scope
+                    // open just ABOVE the END line is the scope being
+                    // closed (the map records post-line state).
+                    let name = containing_scope_name(&scope_map, remark.line - 1)?;
+                    let ptr = scope_node_pointer(root, name)?;
+                    let class_ok = root
+                        .pointer(&ptr)
+                        .and_then(class_suffix)
+                        .is_some_and(|c| Some(c) == expected_class);
+                    class_ok.then_some(ptr)
+                });
             if let Some(ptr) = matched {
                 if let Some(node) = root.pointer_mut(&ptr) {
                     add_remark_with_offset(node, &remark.text, remark.format, remark.position);
@@ -2921,6 +2960,39 @@ mod untagged_tests {
             .expect("root untagged");
         assert_eq!(root.len(), 1);
         assert_eq!(root[0].get("text"), Some(&Value::String("why".to_string())));
+    }
+
+    #[test]
+    fn trailing_comments_behind_a_rendered_item_block_stay_with_the_function() {
+        // The renderer emits the item block AFTER the function's trailing
+        // comments, so a round trip hands the reparse a block sitting
+        // between the comments and END_FUNCTION. The closer probe must
+        // step over the block; falling through attached the comments to
+        // the NEXT function (expressir#609).
+        let source = "SCHEMA demo;\nFUNCTION a : INTEGER;\nRETURN (1);\n-- trailing note\n(*\"demo.a.p\" the item *)\nEND_FUNCTION; -- a\n\nFUNCTION b : INTEGER;\nRETURN (2);\nEND_FUNCTION; -- b\nEND_SCHEMA;\n";
+        let wire = wire_with_untagged(source);
+        let a = wire.pointer("/schemas/0/functions/0").expect("a");
+        let tails: Vec<&str> = a
+            .get("untagged_remarks")
+            .and_then(Value::as_array)
+            .map(|rs| {
+                rs.iter()
+                    .filter_map(|r| r.get("text").and_then(Value::as_str))
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert_eq!(tails, vec!["trailing note", "a"]);
+        let b = wire.pointer("/schemas/0/functions/1").expect("b");
+        let b_tails: Vec<&str> = b
+            .get("untagged_remarks")
+            .and_then(Value::as_array)
+            .map(|rs| {
+                rs.iter()
+                    .filter_map(|r| r.get("text").and_then(Value::as_str))
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert_eq!(b_tails, vec!["b"]);
     }
     #[test]
     fn inline_remark_on_an_end_scope_line_attaches_to_the_scope() {
