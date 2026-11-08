@@ -861,18 +861,17 @@ impl<'a> Formatter<'a> {
         } else {
             node_path(self.ctx, ptr)
         };
-        // One block per remark, like the source convention; a single
-        // single-line remark takes the tail form.
+        // One line per remark. Single-line remarks take the tail form
+        // (the dominant inline convention); multi-line text takes the
+        // block form, which a tail line cannot express.
         let tag = path.unwrap_or_default();
         remarks
             .iter()
             .map(|r| {
                 if r.contains('\n') {
                     format!("(*\"{tag}\"\n{r}\n*)")
-                } else if remarks.len() == 1 {
-                    format!("--\"{tag}\" {r}")
                 } else {
-                    format!("(*\"{tag}\" {r} *)")
+                    format!("--\"{tag}\" {r}")
                 }
             })
             .collect::<Vec<_>>()
