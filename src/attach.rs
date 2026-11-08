@@ -1370,7 +1370,13 @@ pub fn attach_tagged_remarks(root: &mut Value, source: &str, annotations: bool) 
                     .unwrap_or_default();
                 let is_fn_rule_proc =
                     matches!(scope_class.as_str(), "Function" | "Procedure" | "Rule");
-                if is_fn_rule_proc {
+                // A tag whose first segment is a schema id is already
+                // absolute: prepending the containing scope's path would
+                // double-count it, and the implicit walk would then name
+                // the item after the schema (expressir#609).
+                let first_segment = tag.split('.').next().unwrap_or_default();
+                let absolute_tag = schema_id_list.iter().any(|s| s == first_segment);
+                if is_fn_rule_proc && !absolute_tag {
                     if let Some(scope_ptr) = scope_ptr.as_deref() {
                         if let Some(schema_id) = scope_owner_schema_id(root, scope_ptr) {
                             let scope_path = format!(
@@ -1902,7 +1908,10 @@ impl WireIndex {
     }
 
     /// `node_for_end_scope_at`: the node whose END_XXX is on the remark
-    /// line (within a 2-line window), else the first node of that type.
+    /// line (within a 2-line window), else the node of that type whose
+    /// span contains the remark line (remark items between declarations
+    /// push the owner's end past END_XXX). No first-node fallback: it
+    /// piled every unresolvable tail onto the first owner (expressir#609).
     pub fn node_for_end_scope_at(
         &self,
         remark_line: usize,
@@ -1929,10 +1938,16 @@ impl WireIndex {
             })
             .collect();
         candidates.sort_by_key(|e| e.order);
-        candidates
-            .into_iter()
-            .next()
-            .or_else(|| self.entries.iter().find(|e| e.class == kind))
+        candidates.into_iter().next().or_else(|| {
+            self.entries
+                .iter()
+                .filter(|e| {
+                    e.class == kind
+                        && e.line <= remark_line
+                        && e.end_line.is_some_and(|end| end >= remark_line)
+                })
+                .min_by_key(|e| e.order)
+        })
     }
 }
 
@@ -2198,6 +2213,30 @@ mod index_tests {
             .node_for_end_scope_at(5, "END_SCHEMA;")
             .expect("matched");
         assert_eq!(matched.class, "Schema");
+    }
+
+    #[test]
+    fn end_scope_resolves_by_containment_when_items_extend_the_span() {
+        // Remark items live between declarations: their spans push the
+        // function's end past its END_FUNCTION line, so the 2-line
+        // window misses. Containment must still find the owner — and
+        // there must be NO first-function fallback (expressir#609 piled
+        // every stray tail onto the schema's first function).
+        let source = "SCHEMA s;\nFUNCTION a : INTEGER;\nRETURN (1);\nEND_FUNCTION; -- a\n\nFUNCTION b : INTEGER;\nRETURN (2);\nEND_FUNCTION; -- b\nEND_SCHEMA;\n";
+        let wire = ParsedTree::parse(source)
+            .expect("parses")
+            .to_model_json("s.exp")
+            .expect("wire");
+        let index = WireIndex::build(&wire, source);
+        let matched = index
+            .node_for_end_scope_at(7, "END_FUNCTION; -- b")
+            .expect("matched");
+        assert_eq!(matched.class, "Function");
+        let name = wire
+            .pointer(&matched.ptr)
+            .and_then(|n| n.get("id"))
+            .and_then(Value::as_str);
+        assert_eq!(name, Some("b"));
     }
 }
 
