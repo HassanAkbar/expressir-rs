@@ -861,17 +861,29 @@ impl<'a> Formatter<'a> {
         } else {
             node_path(self.ctx, ptr)
         };
-        // One line per remark. Single-line remarks take the tail form
-        // (the dominant inline convention); multi-line text takes the
-        // block form, which a tail line cannot express.
+        // Remark items are WG12 annotation blocks: the embedded form,
+        // a block per remark, matching the source convention of the
+        // annotated corpora (the conservation pairs are embedded, so
+        // tail-form emission reads as phantom gains). Rule-context
+        // owners keep the historic bare-tag tail form.
         let tag = path.unwrap_or_default();
+        if matches!(
+            owner,
+            "WhereRule" | "UniqueRule" | "InformalPropositionRule"
+        ) {
+            return remarks
+                .iter()
+                .map(|r| format!("--\"{tag}\" {r}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+        }
         remarks
             .iter()
             .map(|r| {
                 if r.contains('\n') {
                     format!("(*\"{tag}\"\n{r}\n*)")
                 } else {
-                    format!("--\"{tag}\" {r}")
+                    format!("(*\"{tag}\" {r} *)")
                 }
             })
             .collect::<Vec<_>>()
