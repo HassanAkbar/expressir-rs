@@ -311,12 +311,24 @@ impl<'a> Formatter<'a> {
             "UniqueRule" => self.format_unique_rule(ptr, node),
             "WhereRule" => self.format_where_rule(ptr, node),
             "InformalPropositionRule" => {
-                id_of(node).map(|id| format!("{id}: ")).unwrap_or_default()
+                let mut out = id_of(node).map(|id| format!("{id}: ")).unwrap_or_default();
+                for remark in self.format_remark_items_children(ptr) {
+                    out.push('\n');
+                    out.push_str(&remark);
+                }
+                out
             }
             "SubtypeConstraint" => self.format_subtype_constraint(ptr, node),
             "SchemaVersion" => format!("'{}'", str_fld(node, "value").unwrap_or_default()),
             "RemarkItem" => self.format_remark_item(ptr, node),
-            "EnumerationItem" => id_of(node).unwrap_or_default().to_string(),
+            "EnumerationItem" => {
+                let mut out = id_of(node).unwrap_or_default().to_string();
+                for remark in self.format_remark_items_children(ptr) {
+                    out.push('\n');
+                    out.push_str(&remark);
+                }
+                out
+            }
             _ if class.contains("DataTypes::") => self.format_data_type(ptr, node, &class),
             _ if class.contains("Literals::") => self.format_literal(node),
             _ if class.contains("References::") => self.format_reference(ptr, node, &t),
@@ -361,6 +373,10 @@ impl<'a> Formatter<'a> {
             out.push(String::new());
             out.push(decls.join("\n\n"));
             out.push(String::new());
+        }
+        for remark in self.format_remark_items_children(ptr) {
+            out.push(String::new());
+            out.push(remark);
         }
         out.push(format!("END_SCHEMA;{}", self.format_end_scope_remark(node)));
         out.join("\n")
@@ -469,6 +485,9 @@ impl<'a> Formatter<'a> {
                 out.push(format!("{label}\n{}", indent(&body)));
             }
         }
+        for remark in self.format_remark_items_children(ptr) {
+            out.push(indent(&remark));
+        }
         out.push(format!("END_ENTITY;{}", self.format_end_scope_remark(node)));
         out.join("\n")
     }
@@ -482,6 +501,9 @@ impl<'a> Formatter<'a> {
         if !arr(node, "where_rules").is_empty() {
             let body = self.list_join(ptr, "where_rules", "\n");
             out.push(format!("WHERE\n{}", indent(&body)));
+        }
+        for remark in self.format_remark_items_children(ptr) {
+            out.push(indent(&remark));
         }
         out.push(format!("END_TYPE;{}", self.format_end_scope_remark(node)));
         out.join("\n")
@@ -553,6 +575,9 @@ impl<'a> Formatter<'a> {
             out.push(indent(&body));
         }
         for remark in self.format_trailing_region_remarks(node, "statements") {
+            out.push(indent(&remark));
+        }
+        for remark in self.format_remark_items_children(ptr) {
             out.push(indent(&remark));
         }
         out.push(format!(
@@ -633,6 +658,9 @@ impl<'a> Formatter<'a> {
         for remark in self.format_trailing_region_remarks(node, "where_rules") {
             out.push(indent(&remark));
         }
+        for remark in self.format_remark_items_children(ptr) {
+            out.push(indent(&remark));
+        }
         out.push(format!("END_RULE;{}", self.format_end_scope_remark(node)));
         out.join("\n")
     }
@@ -671,16 +699,25 @@ impl<'a> Formatter<'a> {
         if let Some(id) = id_of(node) {
             out.push_str(&format!(" AS {id}"));
         }
+        for remark in self.format_remark_items_children(ptr) {
+            out.push('\n');
+            out.push_str(&remark);
+        }
         out
     }
 
     fn format_constant(&mut self, ptr: &str, node: &Value) -> String {
-        format!(
+        let mut out = format!(
             "{} : {} := {};",
             id_of(node).unwrap_or_default(),
             self.child(ptr, "type"),
             self.child(ptr, "expression")
-        )
+        );
+        for remark in self.format_remark_items_children(ptr) {
+            out.push('\n');
+            out.push_str(&remark);
+        }
+        out
     }
 
     fn format_attribute(&mut self, ptr: &str, node: &Value) -> String {
@@ -710,16 +747,26 @@ impl<'a> Formatter<'a> {
         }
         out.push(';');
         out.push_str(&self.format_inline_tail_remark(node));
+        let items = self.format_remark_items_children(ptr);
+        for remark in items {
+            out.push('\n');
+            out.push_str(&remark);
+        }
         out
     }
 
     fn format_parameter(&mut self, ptr: &str, node: &Value) -> String {
         let var = if truthy(node, "var") { "VAR " } else { "" };
-        format!(
+        let mut out = format!(
             "{var}{} : {}",
             id_of(node).unwrap_or_default(),
             self.child(ptr, "type")
-        )
+        );
+        for remark in self.format_remark_items_children(ptr) {
+            out.push('\n');
+            out.push_str(&remark);
+        }
+        out
     }
 
     fn format_variable(&mut self, ptr: &str, node: &Value) -> String {
@@ -728,21 +775,36 @@ impl<'a> Formatter<'a> {
         } else {
             String::new()
         };
-        format!(
+        let mut out = format!(
             "{} : {}{expr};",
             id_of(node).unwrap_or_default(),
             self.child(ptr, "type")
-        )
+        );
+        for remark in self.format_remark_items_children(ptr) {
+            out.push('\n');
+            out.push_str(&remark);
+        }
+        out
     }
 
     fn format_unique_rule(&mut self, ptr: &str, node: &Value) -> String {
         let label = id_of(node).map(|id| format!("{id}: ")).unwrap_or_default();
-        format!("{label}{};", self.list_join(ptr, "attributes", ", "))
+        let mut out = format!("{label}{};", self.list_join(ptr, "attributes", ", "));
+        for remark in self.format_remark_items_children(ptr) {
+            out.push('\n');
+            out.push_str(&remark);
+        }
+        out
     }
 
     fn format_where_rule(&mut self, ptr: &str, node: &Value) -> String {
         let label = id_of(node).map(|id| format!("{id}: ")).unwrap_or_default();
-        format!("{label}{};", self.child(ptr, "expression"))
+        let mut out = format!("{label}{};", self.child(ptr, "expression"));
+        for remark in self.format_remark_items_children(ptr) {
+            out.push('\n');
+            out.push_str(&remark);
+        }
+        out
     }
 
     fn format_subtype_constraint(&mut self, ptr: &str, node: &Value) -> String {
@@ -764,6 +826,9 @@ impl<'a> Formatter<'a> {
                 self.child(ptr, "supertype_expression")
             )));
         }
+        for remark in self.format_remark_items_children(ptr) {
+            out.push(indent(&remark));
+        }
         out.push(format!(
             "END_SUBTYPE_CONSTRAINT;{}",
             self.format_end_scope_remark(node)
@@ -781,15 +846,25 @@ impl<'a> Formatter<'a> {
         }
         let path = node_path(self.ctx, ptr);
         let has_newlines = remarks.iter().any(|r| r.contains('\n'));
-        if has_newlines {
+        if has_newlines || remarks.len() > 1 {
             format!(
                 "(*\"{}\"\n{}\n*)",
                 path.unwrap_or_default(),
                 remarks.join("\n")
             )
         } else {
-            format!("--\"{}\"", path.unwrap_or_default())
+            format!("--\"{}\" {}", path.unwrap_or_default(), remarks[0])
         }
+    }
+
+    /// Every `remark_items` child of `ptr`, rendered (the tagged
+    /// remark-item blocks — WG12 `(*"path" ... *)` annotations).
+    fn format_remark_items_children(&mut self, ptr: &str) -> Vec<String> {
+        let count = arr(self.node(ptr), "remark_items").len();
+        (0..count)
+            .map(|i| self.child(ptr, &format!("remark_items/{i}")))
+            .filter(|s| !s.is_empty())
+            .collect()
     }
 
     // ---- data types ----
