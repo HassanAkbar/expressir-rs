@@ -844,7 +844,21 @@ impl<'a> Formatter<'a> {
         if remarks.is_empty() {
             return String::new();
         }
-        let path = node_path(self.ctx, ptr);
+        // Rule-context items (WHERE/UNIQUE/IP) historically carry bare
+        // tags — `--"unusual_placement" text` — while WG12-style items
+        // carry the full path. Preserve each owner's form.
+        let owner = self
+            .ctx
+            .parent
+            .get(ptr)
+            .map(|p| tail(self.node(p)))
+            .unwrap_or_default();
+        let path = if matches!(owner, "WhereRule" | "UniqueRule" | "InformalPropositionRule")
+        {
+            id_of(node).map(str::to_string)
+        } else {
+            node_path(self.ctx, ptr)
+        };
         let has_newlines = remarks.iter().any(|r| r.contains('\n'));
         if has_newlines || remarks.len() > 1 {
             format!(
