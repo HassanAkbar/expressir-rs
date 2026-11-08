@@ -16,17 +16,15 @@ fn absolute_tag_inside_a_scope_takes_the_leaf_id() {
         .to_model_json("demo_schema.exp")
         .expect("wire");
     let mut attached = wire.clone();
-    expressir_rs::attach::attach_tagged_remarks(&mut attached, &source, false);
-    expressir_rs::attach::attach_untagged_remarks(&mut attached, &source, false);
+    expressir_rs::attach::attach_tagged_remarks(&mut attached, source, false);
+    expressir_rs::attach::attach_untagged_remarks(&mut attached, source, false);
 
     let item = attached
         .pointer("/schemas/0/functions/0/remark_items/0")
         .expect("item created under the function");
     assert_eq!(item.get("id").and_then(Value::as_str), Some("lv"));
     assert_eq!(
-        item.get("remarks")
-            .and_then(Value::as_array)
-            .map(Vec::len),
+        item.get("remarks").and_then(Value::as_array).map(Vec::len),
         Some(1)
     );
 }
