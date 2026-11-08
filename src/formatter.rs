@@ -853,22 +853,30 @@ impl<'a> Formatter<'a> {
             .get(ptr)
             .map(|p| tail(self.node(p)))
             .unwrap_or_default();
-        let path = if matches!(owner, "WhereRule" | "UniqueRule" | "InformalPropositionRule")
-        {
+        let path = if matches!(
+            owner,
+            "WhereRule" | "UniqueRule" | "InformalPropositionRule"
+        ) {
             id_of(node).map(str::to_string)
         } else {
             node_path(self.ctx, ptr)
         };
-        let has_newlines = remarks.iter().any(|r| r.contains('\n'));
-        if has_newlines || remarks.len() > 1 {
-            format!(
-                "(*\"{}\"\n{}\n*)",
-                path.unwrap_or_default(),
-                remarks.join("\n")
-            )
-        } else {
-            format!("--\"{}\" {}", path.unwrap_or_default(), remarks[0])
-        }
+        // One block per remark, like the source convention; a single
+        // single-line remark takes the tail form.
+        let tag = path.unwrap_or_default();
+        remarks
+            .iter()
+            .map(|r| {
+                if r.contains('\n') {
+                    format!("(*\"{tag}\"\n{r}\n*)")
+                } else if remarks.len() == 1 {
+                    format!("--\"{tag}\" {r}")
+                } else {
+                    format!("(*\"{tag}\" {r} *)")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     /// Every `remark_items` child of `ptr`, rendered (the tagged
