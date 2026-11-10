@@ -853,10 +853,14 @@ impl<'a> Formatter<'a> {
             .get(ptr)
             .map(|p| tail(self.node(p)))
             .unwrap_or_default();
-        let path = if matches!(
+        let rule_context = matches!(
             owner,
             "WhereRule" | "UniqueRule" | "InformalPropositionRule"
-        ) {
+        );
+        // A referable `__note:id` has no rule to anchor it in a bare tail
+        // tag (it would reattach to the schema), so it carries the path.
+        let bare = rule_context && !id_of(node).is_some_and(|id| id.starts_with("__"));
+        let path = if bare {
             id_of(node).map(str::to_string)
         } else {
             node_path(self.ctx, ptr)
@@ -867,10 +871,7 @@ impl<'a> Formatter<'a> {
         // tail-form emission reads as phantom gains). Rule-context
         // owners keep the historic bare-tag tail form.
         let tag = path.unwrap_or_default();
-        if matches!(
-            owner,
-            "WhereRule" | "UniqueRule" | "InformalPropositionRule"
-        ) {
+        if rule_context {
             return remarks
                 .iter()
                 .map(|r| format!("--\"{tag}\" {r}"))

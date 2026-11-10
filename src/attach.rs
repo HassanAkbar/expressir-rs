@@ -559,7 +559,15 @@ fn supports_remarks(class: &str) -> bool {
 fn exact_path_pointer(root: &Value, path: &str) -> Option<String> {
     let parts: Vec<String> = path
         .split('.')
-        .map(|p| p.rsplit(':').next().unwrap_or(p).to_ascii_lowercase())
+        .map(|p| {
+            // `__note:two` is one referable remark-item id, not a
+            // `prefix:name` pair.
+            if p.starts_with("__") {
+                p.to_ascii_lowercase()
+            } else {
+                p.rsplit(':').next().unwrap_or(p).to_ascii_lowercase()
+            }
+        })
         .collect();
     if parts.is_empty() {
         return None;
@@ -994,6 +1002,14 @@ fn create_or_find_item(root: &mut Value, parent_ptr: &str, item_id: &str) -> Opt
 
 /// `normalize_path`: "a.wr:WR1" -> "a.WR1" (split on the LAST colon).
 fn normalize_path(path: &str) -> String {
+    // `__note:two` is one referable remark-item id, not `prefix:name`.
+    if path
+        .rsplit('.')
+        .next()
+        .is_some_and(|last| last.starts_with("__"))
+    {
+        return path.to_string();
+    }
     match path.rsplit_once(':') {
         Some((path_part, item_suffix)) => format!("{path_part}.{item_suffix}"),
         None => path.to_string(),
@@ -1573,6 +1589,41 @@ mod tagged_chain_tests {
             .and_then(Value::as_array)
             .expect("remarks");
         assert_eq!(remarks[0], Value::String("an informal note".to_string()));
+    }
+
+    fn remark_item_ids(wire: &Value, pointer: &str) -> Vec<String> {
+        wire.pointer(pointer)
+            .and_then(|n| n.get("remark_items"))
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|i| i.get("id").and_then(Value::as_str).map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn referable_note_ids_keep_their_colon_suffix() {
+        let wire = wire_with_tagged(
+            "SCHEMA s;\nFUNCTION f(a : INTEGER) : BOOLEAN; RETURN (TRUE); END_FUNCTION;\nEND_SCHEMA;\n--\"s.f.__note:two\" first\n--\"s.f.__note:3\" second\n--\"s.f.__note\" anonymous\n",
+        );
+        assert_eq!(
+            remark_item_ids(&wire, "/schemas/0/functions/0"),
+            ["__note:two", "__note:3", "__note"]
+        );
+    }
+
+    #[test]
+    fn referable_note_ids_on_a_where_rule_keep_their_colon_suffix() {
+        let wire = wire_with_tagged(
+            "SCHEMA s;\nENTITY w; size : INTEGER; WHERE WR1: size > 0; END_ENTITY;\nEND_SCHEMA;\n--\"s.w.wr:WR1.__note:n1\" a rule note\n",
+        );
+        assert_eq!(
+            remark_item_ids(&wire, "/schemas/0/entities/0/where_rules/0"),
+            ["__note:n1"]
+        );
     }
 
     #[test]
