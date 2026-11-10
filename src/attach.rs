@@ -2471,9 +2471,7 @@ fn active_scope_map(lines: &[&str]) -> Vec<Option<(&'static str, usize)>> {
         }
         for (_, kind, class) in line_events(&content) {
             if kind {
-                if !class.is_empty() {
-                    stack.push((class, idx + 1));
-                }
+                stack.push((class, idx + 1));
             } else {
                 stack.pop();
             }
@@ -2832,7 +2830,7 @@ pub fn attach_untagged_remarks(root: &mut Value, source: &str, annotations: bool
     }
     let lines: Vec<&str> = source.lines().collect();
     let index = WireIndex::build(root, source);
-    let scope_map = build_scope_map(source);
+    let active_map = active_scope_map(&lines);
     let mut attached: Vec<usize> = Vec::new();
 
     for remark in untagged {
@@ -2873,18 +2871,27 @@ pub fn attach_untagged_remarks(root: &mut Value, source: &str, annotations: bool
                 .node_for_end_scope_at(remark.line, line_content)
                 .map(|e| e.ptr.clone())
                 .or_else(|| {
-                    // Scope-walk fallback: spans can miss on the grammar
-                    // lane, where source strings are reconstructions whose
-                    // lengths undershoot the node's real extent. The scope
-                    // open just ABOVE the END line is the scope being
-                    // closed (the map records post-line state).
-                    let name = containing_scope_name(&scope_map, remark.line - 1)?;
-                    let ptr = scope_node_pointer(root, name)?;
-                    let class_ok = root
-                        .pointer(&ptr)
-                        .and_then(class_suffix)
-                        .is_some_and(|c| Some(c) == expected_class);
-                    class_ok.then_some(ptr)
+                    // Scope-walk fallback (`scope_owner_for_end_line`):
+                    // spans can miss on the grammar lane, where source
+                    // strings are reconstructions whose lengths undershoot
+                    // the node's real extent. The construct open at the
+                    // START of the END line is the scope being closed. The
+                    // walk tracks no schema openers, so END_SCHEMA never
+                    // resolves here (it falls through, as in Ruby).
+                    let expected = expected_class?;
+                    let (klass, opener_line) =
+                        active_map.get(remark.line - 1).copied().flatten()?;
+                    // ENTITY/TYPE openers are tracked as the empty class.
+                    let class_ok = klass == expected
+                        || (klass.is_empty() && matches!(expected, "Entity" | "Type"));
+                    if !class_ok {
+                        return None;
+                    }
+                    index
+                        .starting_at(opener_line)
+                        .into_iter()
+                        .find(|e| e.class == expected)
+                        .map(|e| e.ptr.clone())
                 });
             if let Some(ptr) = matched {
                 if let Some(node) = root.pointer_mut(&ptr) {
